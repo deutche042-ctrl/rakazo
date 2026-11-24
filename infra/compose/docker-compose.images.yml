@@ -22,8 +22,10 @@ x-generated-secrets: &generated-secrets >-
   SANDBOX_SUPERVISOR_TOKEN:32:api,worker,supervisor
   RAKAZO_UPDATER_TOKEN:32:updater
 
-# How each service that takes a generated secret starts: a secret left unset is read from the
-# service's copy, and a database URL with an empty password gets the matching one.
+# How each service that takes a generated secret starts, written beside its copies as
+# /run/rakazo-secrets/start: a secret left unset is read from the service's copy, and a database
+# URL with an empty password gets the matching one. Commands run with `compose exec` go through it
+# too on an install without .env, for example `exec api sh /run/rakazo-secrets/start node ...`.
 x-start: &start |
   for file in /run/rakazo-secrets/*; do
     name=$${file##*/}
@@ -394,7 +396,7 @@ services:
     # Optional Hub override; unset keeps the digest-pinned official image.
     image: ${POSTGRES_IMAGE:-postgres:16@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5}
     restart: unless-stopped
-    entrypoint: ["sh", "-c", *start, "--"]
+    entrypoint: ["sh", "/run/rakazo-secrets/start"]
     command: ["docker-entrypoint.sh", "postgres"]
     security_opt:
       - no-new-privileges:true
@@ -456,10 +458,14 @@ services:
             cp "/secrets/$$name" "/services/$$service/$$name"
           done
         done
+        for dir in /services/*; do
+          printf '%s' "$$RAKAZO_START" > "$$dir/start"
+        done
         chown -R 1000:1000 /services
         chmod -R u=rX,go= /services
     environment:
       RAKAZO_GENERATED_SECRETS: *generated-secrets
+      RAKAZO_START: *start
     network_mode: none
     restart: "no"
     security_opt:
@@ -513,7 +519,8 @@ services:
   supervisor:
     image: ${RAKAZO_IMAGE:-ghcr.io/elie222/rakazo/app}:${RAKAZO_IMAGE_TAG:-latest}
     restart: unless-stopped
-    command: ["sh", "-c", *start, "--", "pnpm", "--filter", "@rakazo/sandbox-supervisor", "start"]
+    command:
+      ["sh", "/run/rakazo-secrets/start", "pnpm", "--filter", "@rakazo/sandbox-supervisor", "start"]
     init: true
     user: root
     security_opt:
@@ -579,7 +586,7 @@ services:
   migrate:
     image: ${RAKAZO_IMAGE:-ghcr.io/elie222/rakazo/app}:${RAKAZO_IMAGE_TAG:-latest}
     working_dir: /app/apps/api
-    command: ["sh", "-c", *start, "--", "pnpm", "db:deploy"]
+    command: ["sh", "/run/rakazo-secrets/start", "pnpm", "db:deploy"]
     restart: "no"
     security_opt:
       - no-new-privileges:true
@@ -606,7 +613,7 @@ services:
     # Node runs directly, not through pnpm: pnpm does not pass SIGTERM on, so a stop would kill the
     # process before its graceful shutdown finishes in-flight requests and jobs.
     working_dir: /app/apps/api
-    command: ["sh", "-c", *start, "--", "node", "--enable-source-maps", "dist/index.js"]
+    command: ["sh", "/run/rakazo-secrets/start", "node", "--enable-source-maps", "dist/index.js"]
     init: true
     security_opt:
       - no-new-privileges:true
@@ -715,9 +722,7 @@ services:
     command:
       [
         "sh",
-        "-c",
-        *start,
-        "--",
+        "/run/rakazo-secrets/start",
         "node",
         "--enable-source-maps",
         "--max-semi-space-size=64",
@@ -772,9 +777,7 @@ services:
     command:
       [
         "sh",
-        "-c",
-        *start,
-        "--",
+        "/run/rakazo-secrets/start",
         "node_modules/.bin/vite",
         "preview",
         "--host",
@@ -851,7 +854,7 @@ services:
   updater:
     profiles: [updater]
     image: ${RAKAZO_UPDATER_IMAGE:-ghcr.io/elie222/rakazo/updater}:${RAKAZO_UPDATER_IMAGE_TAG:-latest}
-    command: ["sh", "-c", *start, "--", "node", "--import", "tsx", "src/index.ts"]
+    command: ["sh", "/run/rakazo-secrets/start", "node", "--import", "tsx", "src/index.ts"]
     restart: unless-stopped
     # Allow a 10-minute pull, 90-minute recreate and 90-minute recovery, plus checks.
     stop_grace_period: 4h

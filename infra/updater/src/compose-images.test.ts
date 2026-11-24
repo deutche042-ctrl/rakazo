@@ -27,7 +27,6 @@ const publishWorkflowFile = path.resolve(repoRoot, ".github/workflows/publish-se
 const compose = parse(readFileSync(composeFile, "utf8"), { merge: true }) as {
   services: Record<string, ComposeService>;
   "x-generated-secrets": string;
-  "x-start": string;
 };
 const publishWorkflow = parse(readFileSync(publishWorkflowFile, "utf8")) as {
   jobs?: {
@@ -247,7 +246,7 @@ describe("the images compose file", () => {
       expect(compose.services[name]?.volumes).toContain(`secrets-${name}:/run/rakazo-secrets:ro`);
       const start =
         name === "postgres" ? compose.services[name]?.entrypoint : compose.services[name]?.command;
-      expect(start).toEqual(expect.arrayContaining(["sh", "-c", compose["x-start"]]));
+      expect(start).toEqual(expect.arrayContaining(["sh", "/run/rakazo-secrets/start"]));
     }
     // The canonical copies stay with the service that generates them.
     for (const [name, service] of Object.entries(compose.services)) {

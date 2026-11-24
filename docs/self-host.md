@@ -102,6 +102,9 @@ Nothing else is required. Optional variables:
 The `secrets` volume holds `ENCRYPTION_KEY`, so back it up with the database: encrypted content
 cannot be read without it. Removing the stack's volumes deletes both.
 
+[Admin commands](#admin-commands) and diagnostics run through the same start step, which reads the
+generated secrets: `docker compose exec api sh /run/rakazo-secrets/start node dist/cli/admin.js …`.
+
 ### Restricted networks / mirror downloads
 
 If the installer, Compose downloads, or image pulls are blocked, use the
