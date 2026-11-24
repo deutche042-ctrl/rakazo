@@ -791,6 +791,15 @@ export function computerRoutes(ctx: RouterContext) {
           !input.runId ||
           Boolean(await waitingTakeoverRun(deps, context.actor.spaceId, bot.id, input.runId));
         if (!(await stillWaiting())) return { image: null };
+        // A shared browser can be showing another bot's page. Preview only a tab this bot owns,
+        // and never fall through to observing whichever tab happens to be in front.
+        if (
+          deps.sandbox.browserTabs &&
+          deps.sandbox.browserOwnsTab &&
+          !(await deps.sandbox.browserOwnsTab(bot.id).catch(() => false))
+        ) {
+          return { image: null };
+        }
         const observation = await deps.sandbox
           .observe(
             await wakeableComputerRef(deps.prisma, computer),
