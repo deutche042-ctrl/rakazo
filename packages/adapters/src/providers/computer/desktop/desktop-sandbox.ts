@@ -24,6 +24,8 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  PageBrowserCommand,
+  PageBrowserResult,
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
@@ -60,6 +62,7 @@ import {
   win32NtRelativeAvailable,
 } from "./desktop-sandbox-win32-path.js";
 import { removeOwnedWorkspaceChildren } from "./desktop-workspace-cleanup.js";
+import { NativeBrowser, nativeBrowserOptions } from "./native-browser.js";
 
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
@@ -117,6 +120,15 @@ async function markStopped(home: string) {
 
 export class DesktopSandboxProvider implements SandboxProvider {
   readonly boxes = new Map<string, DesktopBox>();
+  /**
+   * Present only when this host runs the one shared Chromium. Its absence is what tells the
+   * browser adapter that the computer has no page tools.
+   */
+  pageBrowser?: (
+    computer: ComputerRef,
+    request: PageBrowserCommand,
+    context: AdapterContext,
+  ) => Promise<PageBrowserResult>;
   private readonly processTrees = new Map<NativeProcessTree, { home: string; runId?: string }>();
   private processSweep?: NodeJS.Timeout;
 
@@ -167,7 +179,19 @@ export class DesktopSandboxProvider implements SandboxProvider {
 
   constructor(
     private readonly opts: { root?: string; hostRoots?: string[]; maxFileBytes?: number } = {},
-  ) {}
+  ) {
+    const browser = nativeBrowserOptions();
+    if (browser) {
+      const engine = new NativeBrowser(browser);
+      const boxFor = (computer: ComputerRef) => this.boxFor(computer);
+      this.pageBrowser = (computer, request, context) => {
+        const box = boxFor(computer);
+        return box
+          ? engine.run(request, box.home, context.signal)
+          : Promise.reject(new Error("computer not found"));
+      };
+    }
+  }
 
   describe() {
     return describeDesktopSandbox();

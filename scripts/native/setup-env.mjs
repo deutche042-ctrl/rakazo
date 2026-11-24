@@ -6,7 +6,7 @@
 // Secrets live in ~/.local/share/rakazo-native/{owner.pw,app.pw} (600) and are
 // copied into .env without ever being printed. Rerunning keeps existing values.
 import { randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -64,6 +64,34 @@ set("SANDBOX_PROVIDER", "desktop");
 set("DATA_DIR", dataDir);
 set("EMAIL_EMULATOR", "true");
 set("SIGNUPS_ENABLED", "true");
+
+// The one shared browser. Paths are discovered, so a new Chrome download needs nothing here.
+function newestChrome() {
+  const base = path.join(homedir(), ".agent-browser/browsers");
+  if (!existsSync(base)) return undefined;
+  const version = readdirSync(base)
+    .filter((name) => name.startsWith("chrome-"))
+    .sort()
+    .at(-1);
+  const binary = version && path.join(base, version, "chrome");
+  return binary && existsSync(binary) ? binary : undefined;
+}
+
+const chrome = newestChrome();
+const agentBrowser = path.join(state, "tools/ab/node_modules/.bin/agent-browser");
+const pageBrowser = path.join(root, "infra/sandboxes/computer/rakazo-page-browser");
+if (chrome && existsSync(agentBrowser) && existsSync(pageBrowser)) {
+  set("RAKAZO_NATIVE_BROWSER", "1");
+  set("RAKAZO_NATIVE_BROWSER_PORT", "9222");
+  set("RAKAZO_NATIVE_CHROME_BIN", chrome);
+  set("RAKAZO_NATIVE_BROWSER_PROFILE", path.join(state, "browser-profile"));
+  set("RAKAZO_NATIVE_BROWSER_CACHE", "/dev/shm/rakazo/chrome-cache");
+  set("RAKAZO_AGENT_BROWSER", agentBrowser);
+  set("RAKAZO_NATIVE_PAGE_BROWSER", pageBrowser);
+  console.log("Shared browser configured (profile on disk, cache in /dev/shm)");
+} else {
+  console.log("Shared browser not configured: run scripts/native/install-browser.sh first");
+}
 
 writeFileSync(envFile, env, { mode: 0o600 });
 chmodSync(envFile, 0o600);

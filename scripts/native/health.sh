@@ -12,6 +12,8 @@ echo "== web =="
 curl -s -o /dev/null -w "http %{http_code}\n" -m 3 http://127.0.0.1:5173/ || true
 echo "== postgres =="
 "$PG_BIN/pg_ctl" -D "$STATE/pgdata" status 2>/dev/null | head -1 || echo "not running"
+echo "== browser =="
+curl -sf -m 2 http://127.0.0.1:9222/json/version | head -c 90 || echo "not running"
 echo "== /dev/shm =="
 du -sh /dev/shm/rakazo/* 2>/dev/null || true
 df -h /dev/shm | tail -1
