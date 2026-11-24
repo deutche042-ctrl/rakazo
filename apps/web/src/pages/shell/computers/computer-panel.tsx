@@ -77,7 +77,7 @@ export function ComputerPanel({
 }
 
 /** The shared browser's page, one frame a second, rendered where the computer screen used to be. */
-function BrowserLiveFrame({ bot }: { bot: Bot }) {
+export function BrowserLiveFrame({ bot }: { bot: Bot }) {
   const queries = useSpaceQueries();
   const preview = useQuery({
     ...queries.computer.preview.queryOptions({ input: { botId: bot.id } }),
