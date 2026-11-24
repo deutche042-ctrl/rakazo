@@ -15,6 +15,7 @@ import {
 } from "../../../components/teach/TeachRecordingChrome";
 import { runsOnUserMachine } from "../../../lib/computers/computer-sandbox";
 import { screenFrames, screenIframeSandbox } from "../../../lib/computers/computer-screen";
+import { BrowserLiveFrame } from "./computer-panel";
 import {
   DARWIN_WINDOW_CONTROLS_WIDTH_PX,
   desktopBridge,
@@ -193,7 +194,11 @@ export function ComputerOverlay({
         ) : null}
         <div className="relative min-h-0 flex-1 bg-background">
           {runsOnUserMachine(computer) ? (
-            <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-body text-muted-foreground/80" />
+            computer?.kind === "desktop" && computer.state === "running" ? (
+              <BrowserLiveFrame bot={bot} />
+            ) : (
+              <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-body text-muted-foreground/80" />
+            )
           ) : computer?.state === "running" && embeddedScreenUrl && !computerScreenError ? (
             <>
               {screenFrames(screenFrameKey, embeddedScreenUrl, heldScreen).map((frame) => (

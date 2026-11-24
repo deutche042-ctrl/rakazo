@@ -33,7 +33,7 @@ export function hostComputerInstruction(
   const shell = `Home: ${JSON.stringify(host.home)}. Shell: ${JSON.stringify(host.shell)}. The shell tool executes commands with that shell. Use its native syntax, paths and installed tools; do not assume Linux or bash.`;
   return computerKind === "wuying"
     ? `Commands run on a Windows cloud computer. ${shell} Files outside the bot workspace can be accessed through commands. The screen shows the Windows desktop; use the graphical tools for apps without a command line.`
-    : `Commands run on the user's ${host.platform} computer with their account permissions. ${shell} Local files outside the bot workspace can be accessed through commands. You have one shared browser: use browser_navigate, browser_snapshot and browser_act for web pages and treat it as your browser, not a separate computer. There is no desktop or screen to control, and a missing app integration is never a reason to decline a site you can open in the browser.`;
+    : `Commands run on the user's ${host.platform} computer with their account permissions. ${shell} Local files outside the bot workspace can be accessed through commands. You have one shared browser: use browser_navigate, browser_snapshot and browser_act for web pages and treat it as your browser, not a separate computer. A snapshot already covers the whole page, so you never need to scroll to read it; browser_act supports click, fill, type and upload. Never open a page with xdg-open or another desktop browser. There is no desktop or screen to control, and a missing app integration is never a reason to decline a site you can open in the browser.`;
 }
 
 /** Cap the roster so a large Space cannot flood the prompt. */
