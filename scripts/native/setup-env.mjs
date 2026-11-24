@@ -107,6 +107,13 @@ if (chrome && existsSync(agentBrowser) && existsSync(pageBrowser)) {
   console.log("Shared browser not configured: run scripts/native/install-browser.sh first");
 }
 
+// The managed app catalog. Without it Integrations is empty; the key stays in a 600 file.
+const composioKey = path.join(state, "composio.key");
+if (existsSync(composioKey)) {
+  set("COMPOSIO_API_KEY", read(composioKey));
+  console.log("Composio app catalog configured");
+}
+
 writeFileSync(envFile, env, { mode: 0o600 });
 chmodSync(envFile, 0o600);
 console.log(`Wrote ${envFile} (mode 600)`);
