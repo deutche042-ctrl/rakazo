@@ -24,6 +24,19 @@ vi.mock("@rakazo/ui-web", () => ({
 vi.mock("../../../components/computers/ComputersUnavailableHint", () => ({
   ComputersUnavailableHint: () => null,
 }));
+vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: { image: null } }) }));
+vi.mock("../../../lib/query/query", () => ({
+  useSpaceQueries: () => ({
+    computer: {
+      preview: {
+        queryOptions: () => ({
+          queryKey: ["computer", "preview"],
+          queryFn: async () => ({ image: null }),
+        }),
+      },
+    },
+  }),
+}));
 
 import { ComputerPanel } from "./computer-panel";
 
@@ -138,7 +151,7 @@ it("shows the person's own machine from what the server says", async () => {
 it("still shows the person's own machine when an older server names it only by kind", async () => {
   await render({ ...computer("running"), kind: "desktop" });
   expect(container.querySelector('[data-state="running"]')).toBeNull();
-  expect(container.textContent).toContain("This bot runs on your computer");
+  expect(container.textContent).toContain("Waiting for the browser");
 });
 
 it("shows a computer of a kind this build does not know like any other", async () => {
@@ -211,6 +224,6 @@ it("says the bots share a browser before any tab opens", async () => {
     runsOnUserMachine: true,
     browserAvailable: true,
   });
-  expect(container.textContent).toContain("share one browser");
+  expect(container.textContent).toContain("Waiting for the browser");
   expect(container.textContent).not.toContain("Linux desktop");
 });

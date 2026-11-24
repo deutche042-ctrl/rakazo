@@ -3,11 +3,13 @@ import { Trans } from "@lingui/react/macro";
 import type { Bot, ComputerStatus } from "@rakazo/contracts";
 import { computerPreviewPlaceholder } from "@rakazo/i18n/computer-preview";
 import { BotAvatar, Button } from "@rakazo/ui-web";
+import { useQuery } from "@tanstack/react-query";
 import { Globe, HardDrive, Maximize2, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { ComputersUnavailableHint } from "../../../components/computers/ComputersUnavailableHint";
 import { runsOnUserMachine } from "../../../lib/computers/computer-sandbox";
 import { screenFrames, screenIframeSandbox } from "../../../lib/computers/computer-screen";
+import { useSpaceQueries } from "../../../lib/query/query";
 import { DesktopKindEmptyState } from "./computer-view";
 
 type ComputerPanelProps = {
@@ -46,7 +48,8 @@ export function ComputerPanel({
   // The preview keeps its place either way, so the warning never remounts the live screen.
   return (
     <>
-      {tabs.length ? <BrowserTabsPanel tabs={tabs} /> : <ComputerPreview {...props} />}
+      {tabs.length ? <BrowserTabsPanel tabs={tabs} /> : null}
+      <ComputerPreview {...props} />
       {warn && (
         <div
           data-testid="computer-disk-warning"
@@ -70,6 +73,35 @@ export function ComputerPanel({
         </div>
       )}
     </>
+  );
+}
+
+/** The shared browser's page, one frame a second, rendered where the computer screen used to be. */
+function BrowserLiveFrame({ bot }: { bot: Bot }) {
+  const queries = useSpaceQueries();
+  const preview = useQuery({
+    ...queries.computer.preview.queryOptions({ input: { botId: bot.id } }),
+    retry: false,
+    refetchInterval: 1_000,
+    refetchIntervalInBackground: false,
+    gcTime: 0,
+    staleTime: 0,
+  });
+  const image = preview.data?.image ?? null;
+  if (!image)
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-body text-muted-foreground/80">
+        <Globe size={22} strokeWidth={1.7} aria-hidden />
+        <Trans>Waiting for the browser…</Trans>
+      </div>
+    );
+  return (
+    <div className="relative h-full overflow-hidden bg-black">
+      <img src={image} alt={t`Bot browser`} className="h-full w-full object-contain" />
+      <span className="absolute start-2 top-2 rounded-full bg-black/60 px-2 py-0.5 text-caption text-white">
+        <Trans>Live</Trans>
+      </span>
+    </div>
   );
 }
 
@@ -188,15 +220,8 @@ function ComputerPreview({
             <Trans>Open in full window</Trans>
           </div>
         ) : runsOnUserMachine(computer) ? (
-          computer?.browserAvailable ? (
-            <div
-              className={`flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-body text-muted-foreground/80 ${hideOnHover}`}
-            >
-              <Globe size={22} strokeWidth={1.7} aria-hidden />
-              <Trans>
-                Your bots share one browser. Ask a bot to open a page and its tab appears here.
-              </Trans>
-            </div>
+          computer?.kind === "desktop" && computer.state === "running" ? (
+            <BrowserLiveFrame bot={bot} />
           ) : (
             <DesktopKindEmptyState
               className={`grid h-full place-items-center px-6 text-center text-body text-muted-foreground/80 ${hideOnHover}`}

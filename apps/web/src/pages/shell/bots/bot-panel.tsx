@@ -609,7 +609,7 @@ export function BotSettings({
         </div>
         <div className="space-y-6">
           {computer ? (
-            <PanelSection label={<Trans>Computer</Trans>}>{computer}</PanelSection>
+            <PanelSection label={<Trans>Browser</Trans>}>{computer}</PanelSection>
           ) : null}
           {routines ? (
             <PanelSection
