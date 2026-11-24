@@ -200,6 +200,23 @@ function isScreenshotUnavailable(error: unknown): boolean {
   );
 }
 
+/**
+ * Google's final answer to a sign-in from an automated browser. The same page would answer again,
+ * so no caller may retry; the session has to come from the connected Google app instead.
+ */
+export const GOOGLE_SIGNIN_BLOCKED_MESSAGE =
+  "Google blocked this sign-in because the page browser is automated. Do not retry. Connect the Google app in Integrations (OAuth) and use its tools instead.";
+
+/** True when a page browser result is Google's refused-sign-in page. */
+export function isGoogleSignInRejected(result: PageBrowserResult): boolean {
+  const url = typeof result.url === "string" ? result.url : "";
+  const tree = typeof result.tree === "string" ? result.tree : "";
+  return (
+    /accounts\.google\.com\/.*signin\/rejected/i.test(url) ||
+    /This browser or app may not be secure/i.test(tree)
+  );
+}
+
 /** One directory for every process on this host: the API, the worker and the helper scripts. */
 function browserStateDir(): string {
   return (
@@ -506,8 +523,13 @@ export class NativeBrowser {
     if (commands.length) await this.sendCdpBatch(url, commands);
   }
 
-  /** The live pages Chromium reports, each with its own CDP socket. */
-  private async livePages(): Promise<Array<{ id: string; webSocketDebuggerUrl: string }>> {
+  /**
+   * The live pages Chromium reports, each with its own CDP socket. A blank page is not a bot's tab
+   * unless `includeBlank` asks for it, which the owner lookup does for a tab it may have just made.
+   */
+  private async livePages(
+    includeBlank = false,
+  ): Promise<Array<{ id: string; webSocketDebuggerUrl: string }>> {
     const response = await fetch(`http://127.0.0.1:${this.options.port}/json/list`, {
       signal: AbortSignal.timeout(2_000),
     });
@@ -525,8 +547,20 @@ export class NativeBrowser {
         typeof page.id === "string" &&
         typeof page.webSocketDebuggerUrl === "string" &&
         // Chromium starts on a blank tab; it is not something a bot opened.
-        !(page.url === "about:blank" && !page.title),
+        (includeBlank || !(page.url === "about:blank" && !page.title)),
     ) as Array<{ id: string; webSocketDebuggerUrl: string }>;
+  }
+
+  /**
+   * The tab id this bot is remembered by, from this process's maps or the shared file the API and
+   * the worker both write.
+   */
+  private async rememberedTabId(botId: string): Promise<string | undefined> {
+    return (
+      this.botTab.get(botId) ??
+      [...this.owned.entries()].find(([, bot]) => bot === botId)?.[0] ??
+      Object.entries(await this.readOwners()).find(([, bot]) => bot === botId)?.[0]
+    );
   }
 
   /**
@@ -539,21 +573,58 @@ export class NativeBrowser {
   ): Promise<{ id: string; webSocketDebuggerUrl: string } | undefined> {
     try {
       const usable = await this.livePages();
-      const owners = await this.readOwners();
-      const ownedId =
-        this.botTab.get(botId) ??
-        [...this.owned.entries()].find(([, bot]) => bot === botId)?.[0] ??
-        Object.entries(owners).find(([, bot]) => bot === botId)?.[0];
+      const ownedId = await this.rememberedTabId(botId);
       return usable.find((page) => page.id === ownedId);
     } catch {
       return undefined;
     }
   }
 
-  private async pageSocketUrl(botId?: string): Promise<string | undefined> {
+  /**
+   * Opens a tab for a bot that has none yet and records it as that bot's. Without this the bot had
+   * no page to attach to and the caller reported that the page browser was not attached to this
+   * computer's Chrome. Only ever a new tab: another bot's tab is never borrowed.
+   */
+  private async createOwnedPage(botId: string): Promise<string | undefined> {
     try {
-      if (!botId) return (await this.livePages()).at(-1)?.webSocketDebuggerUrl;
-      return (await this.ownedPage(botId))?.webSocketDebuggerUrl;
+      const response = await fetch(
+        `http://127.0.0.1:${this.options.port}/json/new?about:blank`,
+        { method: "PUT", signal: AbortSignal.timeout(2_000) },
+      );
+      const page = (await response.json()) as { id?: unknown; webSocketDebuggerUrl?: unknown };
+      if (typeof page.id !== "string" || typeof page.webSocketDebuggerUrl !== "string") {
+        return undefined;
+      }
+      this.owned.set(page.id, botId);
+      this.botTab.set(botId, page.id);
+      const owners = await this.readOwners();
+      owners[page.id] = botId;
+      await this.writeOwners(owners).catch(() => undefined);
+      return page.webSocketDebuggerUrl;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async pageSocketUrl(botId?: string): Promise<string | undefined> {
+    if (!botId) {
+      try {
+        return (await this.livePages()).at(-1)?.webSocketDebuggerUrl;
+      } catch {
+        return undefined;
+      }
+    }
+    try {
+      const owned = await this.ownedPage(botId);
+      if (owned) return owned.webSocketDebuggerUrl;
+      // The bot may already own a tab that is still blank, which ownedPage hides. Reuse that tab
+      // instead of opening another one for the same bot.
+      const rememberedId = await this.rememberedTabId(botId);
+      if (rememberedId) {
+        const live = (await this.livePages(true)).find((page) => page.id === rememberedId);
+        if (live) return live.webSocketDebuggerUrl;
+      }
+      return await this.createOwnedPage(botId);
     } catch {
       return undefined;
     }
@@ -826,6 +897,17 @@ export class NativeBrowser {
           try {
             const parsed = JSON.parse(stdout) as PageBrowserResult;
             this.lastResultUrl = typeof parsed.url === "string" ? parsed.url : undefined;
+            // Google's refusal is a final answer, not a page to work around: the same sign-in
+            // would be refused again, so it is reported as a failure with no retry.
+            if (isGoogleSignInRejected(parsed)) {
+              resolve({
+                ...parsed,
+                ok: false,
+                error: GOOGLE_SIGNIN_BLOCKED_MESSAGE,
+                note: GOOGLE_SIGNIN_BLOCKED_MESSAGE,
+              });
+              return;
+            }
             resolve(parsed);
           } catch {
             reject(new Error("Page browser returned an unreadable answer"));
