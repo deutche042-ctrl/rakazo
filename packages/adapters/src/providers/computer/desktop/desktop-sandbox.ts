@@ -132,6 +132,10 @@ export class DesktopSandboxProvider implements SandboxProvider {
   ) => Promise<PageBrowserResult>;
   /** The tabs of the shared browser, each with the bot that opened it. */
   browserTabs?: () => Promise<BrowserTabInfo[]>;
+  /** Whether the shared browser is showing a live tab this bot owns, for the preview gate. */
+  browserOwnsTab?: (botId: string) => Promise<boolean>;
+  /** Brings this bot's tab in the shared browser to the front. */
+  focusBrowserTab?: (botId: string) => Promise<boolean>;
   /** The shared browser, when this host has one: frames and input for the panel. */
   private readonly nativeBrowser?: NativeBrowser;
   private readonly processTrees = new Map<NativeProcessTree, { home: string; runId?: string }>();
@@ -197,6 +201,8 @@ export class DesktopSandboxProvider implements SandboxProvider {
           : Promise.reject(new Error("computer not found"));
       };
       this.browserTabs = () => engine.listTabs();
+      this.browserOwnsTab = (botId) => engine.ownsTab(botId);
+      this.focusBrowserTab = (botId) => engine.focusTab(botId);
     }
   }
 

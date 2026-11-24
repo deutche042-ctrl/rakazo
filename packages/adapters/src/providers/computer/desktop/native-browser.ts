@@ -506,36 +506,101 @@ export class NativeBrowser {
     if (commands.length) await this.sendCdpBatch(url, commands);
   }
 
-  private async pageSocketUrl(botId?: string): Promise<string | undefined> {
+  /** The live pages Chromium reports, each with its own CDP socket. */
+  private async livePages(): Promise<Array<{ id: string; webSocketDebuggerUrl: string }>> {
+    const response = await fetch(`http://127.0.0.1:${this.options.port}/json/list`, {
+      signal: AbortSignal.timeout(2_000),
+    });
+    const pages = (await response.json()) as Array<{
+      id?: unknown;
+      type?: unknown;
+      url?: unknown;
+      title?: unknown;
+      webSocketDebuggerUrl?: unknown;
+    }>;
+    if (!Array.isArray(pages)) return [];
+    return pages.filter(
+      (page) =>
+        page.type === "page" &&
+        typeof page.id === "string" &&
+        typeof page.webSocketDebuggerUrl === "string" &&
+        // Chromium starts on a blank tab; it is not something a bot opened.
+        !(page.url === "about:blank" && !page.title),
+    ) as Array<{ id: string; webSocketDebuggerUrl: string }>;
+  }
+
+  /**
+   * The live, non-blank page this bot owns. The API serves preview and the worker runs the bot,
+   * so ownership comes from the shared file as well as this process's maps. Never another bot's
+   * page: a screenshot and the click after it must stay on one tab.
+   */
+  private async ownedPage(
+    botId: string,
+  ): Promise<{ id: string; webSocketDebuggerUrl: string } | undefined> {
     try {
-      const response = await fetch(`http://127.0.0.1:${this.options.port}/json/list`, {
-        signal: AbortSignal.timeout(2_000),
-      });
-      const pages = (await response.json()) as Array<{
-        id?: unknown;
-        type?: unknown;
-        url?: unknown;
-        title?: unknown;
-        webSocketDebuggerUrl?: unknown;
-      }>;
-      if (!Array.isArray(pages)) return undefined;
-      const usable = pages.filter(
-        (page) =>
-          page.type === "page" &&
-          typeof page.id === "string" &&
-          typeof page.webSocketDebuggerUrl === "string" &&
-          !(page.url === "about:blank" && !page.title),
-      ) as Array<{ id: string; webSocketDebuggerUrl: string }>;
-      if (!botId) return usable.at(-1)?.webSocketDebuggerUrl;
-      // The API serves preview and the worker runs the bot, so ownership must come from the
-      // shared file as well as this process's maps.
+      const usable = await this.livePages();
       const owners = await this.readOwners();
       const ownedId =
         this.botTab.get(botId) ??
         [...this.owned.entries()].find(([, bot]) => bot === botId)?.[0] ??
         Object.entries(owners).find(([, bot]) => bot === botId)?.[0];
-      // Never borrow another bot's page: a screenshot and the click after it must stay on one tab.
-      return usable.find((page) => page.id === ownedId)?.webSocketDebuggerUrl;
+      return usable.find((page) => page.id === ownedId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async pageSocketUrl(botId?: string): Promise<string | undefined> {
+    try {
+      if (!botId) return (await this.livePages()).at(-1)?.webSocketDebuggerUrl;
+      return (await this.ownedPage(botId))?.webSocketDebuggerUrl;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * True only when the shared browser shows a live, non-blank tab this bot owns. The preview gate
+   * asks first, so a bot with no tab of its own never reveals whoever else is in front.
+   */
+  async ownsTab(botId: string): Promise<boolean> {
+    return (await this.ownedPage(botId)) !== undefined;
+  }
+
+  /**
+   * Brings this bot's own tab to the front. False when it owns no live tab, so a caller does not
+   * report a focus that never happened. Held under the shared lock: activating a target changes
+   * which page is in front while a helper command may be reading it.
+   */
+  async focusTab(botId: string): Promise<boolean> {
+    const page = await this.ownedPage(botId);
+    if (!page) return false;
+    const browserUrl = await this.browserSocketUrl();
+    // The browser endpoint activates a target; the page's own socket is the fallback.
+    const urls = browserUrl ? [browserUrl, page.webSocketDebuggerUrl] : [page.webSocketDebuggerUrl];
+    return this.withLock(async () => {
+      for (const url of urls) {
+        try {
+          await this.sendCdp(url, "Target.activateTarget", { targetId: page.id });
+          return true;
+        } catch {
+          // Try the next socket; none left means the tab went away under us.
+        }
+      }
+      return false;
+    });
+  }
+
+  /** The browser-level CDP endpoint, which can act on a target rather than a page. */
+  private async browserSocketUrl(): Promise<string | undefined> {
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.options.port}/json/version`, {
+        signal: AbortSignal.timeout(2_000),
+      });
+      const version = (await response.json()) as { webSocketDebuggerUrl?: unknown };
+      return typeof version.webSocketDebuggerUrl === "string"
+        ? version.webSocketDebuggerUrl
+        : undefined;
     } catch {
       return undefined;
     }
