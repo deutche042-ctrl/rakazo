@@ -713,7 +713,16 @@ services:
     # Busy runs allocate fast; a larger young generation cuts the garbage collection that otherwise
     # takes most of the worker's CPU.
     command:
-      ["sh", "-c", *start, "--", "node", "--enable-source-maps", "--max-semi-space-size=64", "dist/index.js"]
+      [
+        "sh",
+        "-c",
+        *start,
+        "--",
+        "node",
+        "--enable-source-maps",
+        "--max-semi-space-size=64",
+        "dist/index.js",
+      ]
     # A stop lets the running jobs finish rather than killing them mid-way, which would leave each
     # locked for hours. Above JOB_DRAIN_TIMEOUT_MS in packages/adapters/src/runs/wakeups/wakeup.ts.
     stop_grace_period: 50m
@@ -761,7 +770,18 @@ services:
     # Directly, not through pnpm, so a stop reaches it (see the api command).
     working_dir: /app/apps/web
     command:
-      ["sh", "-c", *start, "--", "node_modules/.bin/vite", "preview", "--host", "0.0.0.0", "--port", "5173"]
+      [
+        "sh",
+        "-c",
+        *start,
+        "--",
+        "node_modules/.bin/vite",
+        "preview",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "5173",
+      ]
     volumes:
       # Recent builds' hashed assets, so tabs still running one keep loading chunks after a deploy.
       - webassets:/app/apps/web/asset-archive
