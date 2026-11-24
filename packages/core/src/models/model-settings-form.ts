@@ -201,38 +201,40 @@ export function credentialModelSettings(
 }
 
 /**
- * The efforts a model offers. An OpenAI-compatible model offers its endpoint's once its own
- * settings say it thinks; any other model offers the catalog's.
+ * The efforts a model offers. An OpenAI-compatible endpoint always offers its protocol's levels:
+ * the person configured it, and picking a level is what turns thinking on, so a new model must not
+ * start with an empty list. Any other model offers the catalog's once its settings say it thinks.
  */
 export function modelThinkingLevels(
   credential: (SettingsCredential & Pick<ModelCredential, "apiProtocol">) | undefined,
   entry: Pick<ModelCatalogEntry, "thinkingLevels" | "defaultCapabilities"> | undefined,
   modelId: string | null | undefined,
 ): ThinkingLevel[] {
+  if (credential?.provider === OPENAI_COMPATIBLE_PROVIDER_ID && modelId)
+    return [...compatibleThinkingLevels(credential.apiProtocol)];
   if (credential && modelId && entry?.defaultCapabilities) {
     const reasoning =
       credentialModelSettings(credential, modelId).reasoning ?? entry.defaultCapabilities.reasoning;
     return reasoning ? (entry.defaultCapabilities.thinkingLevels ?? []) : ["off"];
   }
-  if (credential?.provider !== OPENAI_COMPATIBLE_PROVIDER_ID || !modelId)
-    return entry?.thinkingLevels ?? [];
-  return credentialModelSettings(credential, modelId).reasoning
-    ? [...compatibleThinkingLevels(credential.apiProtocol)]
-    : [];
+  return entry?.thinkingLevels ?? [];
 }
 
 /**
  * The levels a model's settings may pick for it to think at, "off" first: the ones a listed model
- * borrows from the catalog, else the ones its live entry offers, else its endpoint's.
+ * borrows from the catalog, else the ones its live entry offers, else its endpoint's. An
+ * OpenAI-compatible endpoint offers its protocol's levels even before thinking is turned on.
  */
 export function modelSettingsThinkingLevels(
-  credential: Pick<ModelCredential, "apiProtocol">,
+  credential: Pick<ModelCredential, "apiProtocol" | "provider">,
   entry: Pick<ModelCatalogEntry, "defaultCapabilities" | "thinkingLevels"> | undefined,
 ): ThinkingLevel[] {
   const levels =
-    (entry?.defaultCapabilities
-      ? entry.defaultCapabilities.thinkingLevels
-      : entry?.thinkingLevels) ?? compatibleThinkingLevels(credential.apiProtocol);
+    credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+      ? compatibleThinkingLevels(credential.apiProtocol)
+      : ((entry?.defaultCapabilities
+          ? entry.defaultCapabilities.thinkingLevels
+          : entry?.thinkingLevels) ?? compatibleThinkingLevels(credential.apiProtocol));
   return ["off", ...levels.filter((level) => level !== "off")];
 }
 

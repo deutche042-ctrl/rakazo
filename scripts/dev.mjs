@@ -65,7 +65,7 @@ const MANAGED = {
   database: "rakazo",
 };
 const TAILSCALE_APP_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
-const SERVICES = ["@rakazo/api", "@rakazo/worker", "@rakazo/web", "@rakazo/sandbox-supervisor"];
+const ALL_SERVICES = ["@rakazo/api", "@rakazo/worker", "@rakazo/web", "@rakazo/sandbox-supervisor"];
 
 const fileEnv = existsSync(path.join(root, ".env"))
   ? dotenv.parse(readFileSync(path.join(root, ".env")))
@@ -602,8 +602,12 @@ if (/^(1|true)$/i.test(setting("RAKAZO_DEV_TAILNET") ?? "")) {
 
 if (tailnet) log(`Open ${tailnet.origin} from any device on your tailnet`);
 else if (ports) log(`Open http://127.0.0.1:${ports.web}`);
+// A native host provider never uses the in-stack supervisor, which needs Docker only to exist.
+const provider = (setting("SANDBOX_PROVIDER") ?? "").trim().toLowerCase();
+const services =
+  provider === "desktop" || provider === "none" ? ALL_SERVICES.slice(0, 3) : ALL_SERVICES;
 const turbo = spawnPnpm(
-  ["exec", "turbo", "dev", "--env-mode=loose", ...SERVICES.map((name) => `--filter=${name}`)],
+  ["exec", "turbo", "dev", "--env-mode=loose", ...services.map((name) => `--filter=${name}`)],
   { cwd: root, env, stdio: "inherit" },
 );
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => turbo.kill(signal));

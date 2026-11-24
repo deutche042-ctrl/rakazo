@@ -155,7 +155,7 @@ describe("modelSettingsFields", () => {
 
 describe("modelSettingsThinkingLevels", () => {
   it("offers off and every level the model could think at", () => {
-    expect(modelSettingsThinkingLevels({}, undefined)).toEqual([
+    expect(modelSettingsThinkingLevels({ provider: "openai" }, undefined)).toEqual([
       "off",
       "minimal",
       "low",
@@ -164,24 +164,39 @@ describe("modelSettingsThinkingLevels", () => {
       "xhigh",
       "max",
     ]);
-    expect(modelSettingsThinkingLevels({ apiProtocol: "anthropic-messages" }, undefined)).toEqual([
-      "off",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-    ]);
     expect(
       modelSettingsThinkingLevels(
-        {},
+        { provider: "anthropic", apiProtocol: "anthropic-messages" },
+        undefined,
+      ),
+    ).toEqual(["off", "minimal", "low", "medium", "high"]);
+    expect(
+      modelSettingsThinkingLevels(
+        { provider: "openai" },
         { defaultCapabilities: { thinkingLevels: ["off", "low", "high", "max"] } },
       ),
     ).toEqual(["off", "low", "high", "max"]);
-    expect(modelSettingsThinkingLevels({}, { thinkingLevels: ["low", "high"] })).toEqual([
-      "off",
-      "low",
-      "high",
-    ]);
+    expect(
+      modelSettingsThinkingLevels({ provider: "openai" }, { thinkingLevels: ["low", "high"] }),
+    ).toEqual(["off", "low", "high"]);
+  });
+
+  it("offers its protocol's levels for a custom endpoint before thinking is turned on", () => {
+    // A live entry for a custom model carries only "off" until reasoning is saved, which the person
+    // can only do by picking a level. The settings menu must not be a dead end.
+    expect(
+      modelSettingsThinkingLevels(
+        { provider: COMPATIBLE, apiProtocol: "chat-completions" },
+        { thinkingLevels: ["off"] },
+      ),
+    ).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(
+      modelThinkingLevels(
+        credential({ provider: COMPATIBLE, apiProtocol: "chat-completions" }),
+        { thinkingLevels: ["off"] },
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      ),
+    ).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
   });
 });
 
