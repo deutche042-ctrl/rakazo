@@ -91,7 +91,7 @@ export async function computerStatus(
   // bots themselves, so the panel can say who opened each tab.
   if (!deps.sandbox.browserTabs) return status;
   const tabs = await deps.sandbox.browserTabs().catch(() => []);
-  if (!tabs.length) return status;
+  if (!tabs.length) return { ...status, browserAvailable: true };
   const owners = [...new Set(tabs.map((tab) => tab.botId).filter((id): id is string => Boolean(id)))];
   const names =
     owners.length && deps.prisma.bot
@@ -102,6 +102,7 @@ export async function computerStatus(
   const nameById = new Map(names.map((bot) => [bot.id, bot.name]));
   return {
     ...status,
+    browserAvailable: true,
     browserTabs: tabs.map((tab) => ({
       id: tab.id,
       title: tab.title,

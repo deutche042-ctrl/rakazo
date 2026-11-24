@@ -188,9 +188,20 @@ function ComputerPreview({
             <Trans>Open in full window</Trans>
           </div>
         ) : runsOnUserMachine(computer) ? (
-          <DesktopKindEmptyState
-            className={`grid h-full place-items-center px-6 text-center text-body text-muted-foreground/80 ${hideOnHover}`}
-          />
+          computer?.browserAvailable ? (
+            <div
+              className={`flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-body text-muted-foreground/80 ${hideOnHover}`}
+            >
+              <Globe size={22} strokeWidth={1.7} aria-hidden />
+              <Trans>
+                Your bots share one browser. Ask a bot to open a page and its tab appears here.
+              </Trans>
+            </div>
+          ) : (
+            <DesktopKindEmptyState
+              className={`grid h-full place-items-center px-6 text-center text-body text-muted-foreground/80 ${hideOnHover}`}
+            />
+          )
         ) : computer?.state === "running" && embeddedScreenUrl && !computerScreenError ? (
           screenFrames(screenFrameKey, embeddedScreenUrl, heldScreen).map((frame) => (
             <iframe

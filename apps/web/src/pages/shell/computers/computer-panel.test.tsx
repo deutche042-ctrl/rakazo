@@ -130,7 +130,7 @@ it("shows the person's own machine from what the server says", async () => {
   expect(container.querySelector('[data-state="running"]')).not.toBeNull();
   await render({ ...computer("running"), kind: "any-kind", runsOnUserMachine: true });
   expect(container.querySelector('[data-state="running"]')).toBeNull();
-  expect(container.textContent).toContain("This bot runs on this computer");
+  expect(container.textContent).toContain("This bot runs on your computer");
   await render({ ...computer("stopped"), kind: "any-kind", runsOnUserMachine: true });
   expect(container.querySelector('[data-state="idle"]')).toBeNull();
 });
@@ -138,7 +138,7 @@ it("shows the person's own machine from what the server says", async () => {
 it("still shows the person's own machine when an older server names it only by kind", async () => {
   await render({ ...computer("running"), kind: "desktop" });
   expect(container.querySelector('[data-state="running"]')).toBeNull();
-  expect(container.textContent).toContain("This bot runs on this computer");
+  expect(container.textContent).toContain("This bot runs on your computer");
 });
 
 it("shows a computer of a kind this build does not know like any other", async () => {
@@ -180,4 +180,37 @@ it("shows no disk warning while the disk has room", async () => {
     onDismissDiskWarning: vi.fn(),
   });
   expect(container.querySelector('[data-testid="computer-disk-warning"]')).toBeNull();
+});
+
+it("lists the shared browser's tabs with the bot that opened each", async () => {
+  await render({
+    ...computer("running"),
+    kind: "desktop",
+    runsOnUserMachine: true,
+    browserAvailable: true,
+    browserTabs: [
+      {
+        id: "tab-1",
+        title: "Inbox",
+        url: "https://mail.example.com/",
+        botId: "bot-2",
+        botName: "Grace",
+      },
+    ],
+  });
+  expect(container.querySelector('[data-testid="browser-tabs"]')).not.toBeNull();
+  expect(container.textContent).toContain("Grace");
+  expect(container.textContent).toContain("Inbox");
+  expect(container.textContent).toContain("mail.example.com");
+});
+
+it("says the bots share a browser before any tab opens", async () => {
+  await render({
+    ...computer("running"),
+    kind: "desktop",
+    runsOnUserMachine: true,
+    browserAvailable: true,
+  });
+  expect(container.textContent).toContain("share one browser");
+  expect(container.textContent).not.toContain("Linux desktop");
 });

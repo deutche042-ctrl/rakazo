@@ -76,6 +76,8 @@ export const ComputerStatusSchema = z.object({
       }),
     )
     .optional(),
+  /** True when the host runs one shared browser, so the panel can say so before any tab opens. */
+  browserAvailable: z.boolean().optional(),
 });
 export type ComputerStatus = z.infer<typeof ComputerStatusSchema>;
 
