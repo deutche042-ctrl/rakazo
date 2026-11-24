@@ -289,9 +289,18 @@ export function useComputerControls({
   });
 
   const hasControl = userHoldsComputerControl(computer, computerBot?.id);
+  // The bot panel holds the same lease as the full window, so its heartbeat runs while that panel
+  // is open and this person has control; an open full window still owns its own.
+  const panelControlBotId = panel === "settings" ? active?.id : undefined;
+  const panelHoldsControl = userHoldsComputerControl(computer, panelControlBotId);
+  const heartbeatBotId = computerOpen
+    ? (computerBot?.id ?? active?.id)
+    : panelHoldsControl
+      ? panelControlBotId
+      : undefined;
+  const heartbeatControl = computerOpen ? hasControl : panelHoldsControl;
   useEffect(() => {
-    const heartbeatBotId = computerBot?.id ?? active?.id;
-    if (!computerOpen || !heartbeatBotId || computer?.state !== "running") return;
+    if (!heartbeatBotId || computer?.state !== "running") return;
     // Only a visible page checks in: a forgotten tab neither keeps the computer awake nor holds
     // control, which lapses about a minute and a half after it was hidden.
     const ping = () => {
@@ -302,7 +311,7 @@ export function useComputerControls({
     };
     const timer = window.setInterval(
       ping,
-      hasControl ? COMPUTER_CONTROL_HEARTBEAT_MS : COMPUTER_HEARTBEAT_MS,
+      heartbeatControl ? COMPUTER_CONTROL_HEARTBEAT_MS : COMPUTER_HEARTBEAT_MS,
     );
     ping();
     // Coming back checks in at once, so a short visit elsewhere keeps control.
@@ -311,13 +320,20 @@ export function useComputerControls({
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", ping);
     };
-  }, [computerOpen, computerBot?.id, active?.id, computer?.state, hasControl]);
+  }, [heartbeatBotId, heartbeatControl, computer?.state]);
 
   // Control ends with the screen: closing it, switching chats, or leaving the page hands it back.
   // The server tells the holder their lease, from Take control or teaching alike; the hand back
   // names it, so a late one from an old page never ends newer control.
-  const heldBotId = hasControl && computerOpen ? computerBot?.id : undefined;
-  const heldLeaseId = heldBotId ? computer?.controlLeaseId : undefined;
+  const heldBotId = computerOpen
+    ? hasControl
+      ? computerBot?.id
+      : undefined
+    : panelHoldsControl
+      ? panelControlBotId
+      : undefined;
+  const heldLeaseId =
+    heldBotId && computer?.botId === heldBotId ? computer.controlLeaseId : undefined;
   const handBack = (botId: string, leaseId: string) =>
     void rpc.computer
       .release({ botId, leaseId }, { context: { keepalive: true } })
@@ -386,13 +402,14 @@ export function useComputerControls({
     void openComputerRef.current(botId, takeControl);
   }, []);
 
-  async function releaseComputer(reason?: ComputerReleaseReason) {
-    const botId = computerBotIdRef.current ?? activeBotId.current;
+  async function releaseComputer(reason?: ComputerReleaseReason, forBotId?: string) {
+    const botId = forBotId ?? computerBotIdRef.current ?? activeBotId.current;
     if (!botId) return;
     // Hand back and I'm done end whatever control this person holds on the bot's screen. Nothing
     // changes here until the server answers; the screen then follows its state.
     try {
-      const leaseId = computerRef.current?.controlLeaseId ?? ownControlLease(botId);
+      const current = computerRef.current?.botId === botId ? computerRef.current : null;
+      const leaseId = current?.controlLeaseId ?? ownControlLease(botId);
       if (leaseId) expectOwnControlEvent(botId, "computer.takeover.released", leaseId);
       if (reason !== undefined) expectOwnAnswer(botId);
       await rpc.computer.release({ botId, reason }).catch(async (error) => {
@@ -409,6 +426,24 @@ export function useComputerControls({
       if (computerBotIdRef.current !== botId && activeBotId.current !== botId) return;
       setComputerError(t`Could not continue`);
       setComputerErrorFromScreen(false);
+    }
+  }
+
+  /**
+   * Taking control from the bot panel: the same takeover as the full window, without opening it,
+   * so the person keeps the lease and checks in from the panel.
+   */
+  async function takePanelControl(botId: string) {
+    const known = computerRef.current?.botId === botId ? computerRef.current : null;
+    if (userHoldsComputerControl(known, botId)) return;
+    try {
+      await bootComputer({
+        botId,
+        takeControl: true,
+        force: known?.state !== "running",
+      });
+    } catch {
+      // bootComputer has already put the reason in the panel.
     }
   }
 
@@ -567,6 +602,11 @@ export function useComputerControls({
       showComputerRecoveryHint,
       onRecoveryDismissed: releaseComputerRecovery,
       onOpen: () => void openComputer(),
+      // The panel's own lease controls, so a person can take and hand back the shared browser
+      // without opening the full window.
+      hasControl: userHoldsComputerControl(computer, bot.id),
+      onTakeControl: () => void takePanelControl(bot.id),
+      onRelease: (reason?: ComputerReleaseReason) => releaseComputer(reason, bot.id),
       cleaningUpDisk,
       onCleanUpDisk: () => cleanUpDisk(bot.id),
       onDismissDiskWarning: () => void dismissDiskWarning(bot.id),
