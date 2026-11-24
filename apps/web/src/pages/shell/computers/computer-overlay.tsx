@@ -16,6 +16,7 @@ import {
 } from "../../../components/teach/TeachRecordingChrome";
 import { runsOnUserMachine } from "../../../lib/computers/computer-sandbox";
 import { screenFrames, screenIframeSandbox } from "../../../lib/computers/computer-screen";
+import { errorCode } from "../../../lib/query/user-error";
 import { BrowserLiveFrame } from "./computer-panel";
 import { useSpaceQueries } from "../../../lib/query/query";
 import {
@@ -80,6 +81,9 @@ export function ComputerOverlay({
 }: ComputerOverlayProps) {
   const queries = useSpaceQueries();
   const sendInput = useMutation(queries.computer.input.mutationOptions());
+  // A refused input means this tab no longer holds the lease the screen was drawn for, so offer
+  // Take control rather than leaving a frame that silently ignores every click.
+  const inputForbidden = sendInput.isError === true && errorCode(sendInput.error) === "FORBIDDEN";
   // The picture is taken on the server from the running computer, so it does not wait for the frame
   // to connect; a user's own machine has no screen here to take.
   const canSaveScreenshot = !runsOnUserMachine(computer) && computer?.state === "running";
@@ -148,7 +152,7 @@ export function ComputerOverlay({
             ) : null}
             {recordingSkill ? (
               <TeachStopButton busy={teachBusy} onStop={onStopTeaching} />
-            ) : hasControl ? (
+            ) : hasControl && !inputForbidden ? (
               <ComputerReleaseActions
                 takeoverRequested={Boolean(computer?.takeoverRequested)}
                 onRelease={onRelease}
@@ -159,7 +163,11 @@ export function ComputerOverlay({
                 variant="outline"
                 size="sm"
                 disabled={booting}
-                onClick={() => void onTakeControl()}
+                onClick={() => {
+                  // Let the next attempt clear the refused input and ask for control again.
+                  sendInput.reset();
+                  onTakeControl();
+                }}
               >
                 <Trans>Take control</Trans>
               </Button>
@@ -202,7 +210,7 @@ export function ComputerOverlay({
               <BrowserLiveFrame
                 bot={bot}
                 onPoint={
-                  hasControl
+                  hasControl && !inputForbidden
                     ? (x, y) =>
                         sendInput.mutate({
                           botId: bot.id,
@@ -229,7 +237,10 @@ export function ComputerOverlay({
                   className={`h-full w-full border-0 bg-black${frame.held ? " absolute inset-0" : ""}`}
                   allow="clipboard-read; clipboard-write; fullscreen"
                   style={{
-                    pointerEvents: frame.held || recordingSkill || !hasControl ? "none" : "auto",
+                    pointerEvents:
+                      frame.held || recordingSkill || !hasControl || inputForbidden
+                        ? "none"
+                        : "auto",
                   }}
                 />
               ))}

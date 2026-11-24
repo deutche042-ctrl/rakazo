@@ -1,6 +1,6 @@
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
-import type { Bot, ComputerStatus } from "@rakazo/contracts";
+import type { Bot, ComputerReleaseReason, ComputerStatus } from "@rakazo/contracts";
 import { computerPreviewPlaceholder } from "@rakazo/i18n/computer-preview";
 import { BotAvatar, Button } from "@rakazo/ui-web";
 import { useQuery } from "@tanstack/react-query";
@@ -32,6 +32,12 @@ type ComputerPanelProps = {
   onRecoveryDismissed: () => void;
   onOpenComputerSettings?: () => void;
   onOpen: () => void;
+  /** Whether this person holds the shared browser's control right now. */
+  hasControl?: boolean;
+  /** Ask for the shared browser's control without opening the full window. */
+  onTakeControl?: () => void;
+  /** Hand that control back. */
+  onRelease?: (reason?: ComputerReleaseReason) => Promise<void>;
   cleaningUpDisk?: boolean;
   onCleanUpDisk?: () => void;
   onDismissDiskWarning?: () => void;
@@ -187,6 +193,9 @@ function ComputerPreview({
   onRecoveryDismissed,
   onOpenComputerSettings,
   onOpen,
+  hasControl,
+  onTakeControl,
+  onRelease,
 }: Omit<ComputerPanelProps, "cleaningUpDisk" | "onCleanUpDisk" | "onDismissDiskWarning">) {
   // A clickable preview invites a boot that costs money, so an idle computer only wakes from its button.
   const idle =
@@ -226,6 +235,13 @@ function ComputerPreview({
     );
   }
   const canOpen = !computerScreenError && !showingRecoveryHint;
+  // The shared browser is the one computer a person can hold from the bot panel; the full window
+  // has its own Take control and Hand back.
+  const sharedBrowserFrame =
+    !computerOpen &&
+    computer?.kind === "desktop" &&
+    computer.state === "running" &&
+    (computer.browserAvailable === true || runsOnUserMachine(computer));
   // The Open pill replaces the status text on hover; fade it so they never overlap.
   const hideOnHover = canOpen
     ? "transition-opacity group-hover:opacity-0 group-has-[:focus-visible]:opacity-0"
@@ -300,6 +316,32 @@ function ComputerPreview({
               <Trans>Open</Trans>
             </span>
           </button>
+        ) : null}
+        {sharedBrowserFrame && onTakeControl && onRelease ? (
+          <div className="absolute end-2 top-2 z-10">
+            {hasControl ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                data-testid="panel-hand-back-control"
+                onClick={() => void onRelease()}
+              >
+                <Trans>Hand back control</Trans>
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                data-testid="panel-take-control"
+                disabled={booting}
+                onClick={onTakeControl}
+              >
+                <Trans>Take control</Trans>
+              </Button>
+            )}
+          </div>
         ) : null}
       </div>
     </div>
