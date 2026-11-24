@@ -6,7 +6,15 @@
 // Secrets live in ~/.local/share/rakazo-native/{owner.pw,app.pw} (600) and are
 // copied into .env without ever being printed. Rerunning keeps existing values.
 import { randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -17,6 +25,12 @@ const example = path.join(root, ".env.example");
 // Durable state (workspace, bot files) must survive a reboot, so it lives on disk.
 // /dev/shm holds only cache, temp files and scratch data.
 const dataDir = path.join(state, "data");
+
+// The state tree holds credentials, cookies and bot files; no other local user may read it.
+mkdirSync(state, { recursive: true, mode: 0o700 });
+chmodSync(state, 0o700);
+mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+chmodSync(dataDir, 0o700);
 
 const hex = (bytes) => randomBytes(bytes).toString("hex");
 const read = (file) => readFileSync(file, "utf8").trim();

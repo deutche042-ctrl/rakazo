@@ -2,6 +2,7 @@
 # Installs the shared browser userspace: agent-browser and Chrome for Testing.
 # No root and no system packages.
 set -euo pipefail
+umask 077
 
 STATE="$HOME/.local/share/rakazo-native"
 TOOLS="$STATE/tools/ab"

@@ -5,6 +5,7 @@
 # Chrome writes cookies, logins and localStorage at shutdown, so stop it with
 # browser-stop.sh (SIGTERM, then wait) rather than killing the process.
 set -euo pipefail
+umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STATE="$HOME/.local/share/rakazo-native"
@@ -34,6 +35,7 @@ if curl -sf -m 2 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
 fi
 
 mkdir -p "$PROFILE" "$CACHE"
+chmod 700 "$PROFILE" "$CACHE" 2>/dev/null || true
 echo "[browser] starting Chromium on 127.0.0.1:${PORT}"
 nohup "$CHROME" \
   --headless=new \

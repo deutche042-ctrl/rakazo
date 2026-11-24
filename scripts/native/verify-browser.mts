@@ -39,6 +39,14 @@ const navigated = await provider.pageBrowser(
 );
 const snapshot = await provider.pageBrowser(ref, { command: "snapshot" }, context);
 
+const passed = navigated.ok === true && snapshot.ok === true && (snapshot.elements?.length ?? 0) > 0;
+if (!passed) {
+  // A structured failure resolves with ok: false and a zero exit status, so this script must fail
+  // itself or a broken browser would look green.
+  console.error("Browser verification failed");
+  process.exitCode = 1;
+}
+
 console.log(
   JSON.stringify(
     {

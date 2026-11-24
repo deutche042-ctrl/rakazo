@@ -1,9 +1,15 @@
 import { spawn } from "node:child_process";
+import { open, stat, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { PageBrowserCommand, PageBrowserResult } from "@rakazo/adapter-kit";
 
 /** The supervisor's own limits, so a native page browser answers like the in-container one. */
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const COMMAND_TIMEOUT_MS = 25_000;
+/** Longer than one command, so a lock left by a crashed process frees itself. */
+const LOCK_STALE_MS = 60_000;
+const LOCK_WAIT_MS = 30_000;
 
 export interface NativeBrowserOptions {
   /** Loopback CDP port of the one shared Chromium. */
@@ -78,6 +84,27 @@ function helperCommand(command: PageBrowserCommand["command"]): HelperCommand {
   }
 }
 
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+/** Kills the helper and the agent-browser it started, not just the helper. */
+function killTree(child: ReturnType<typeof spawn>) {
+  if (!child.pid) return;
+  try {
+    // The child leads its own group (detached), so this reaches its descendants too.
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
 export class NativeBrowser {
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -85,7 +112,9 @@ export class NativeBrowser {
 
   /**
    * One browser serves every bot, so its commands run one at a time. The helper's session is bound
-   * to the display, and two commands naming element refs at once would read each other's page.
+   * to the display, and two commands naming element refs at once would read each other's page. The
+   * in-process queue is not enough: the API and the worker each build their own provider, so a lock
+   * file beside the display serializes them too.
    */
   run(
     request: PageBrowserCommand,
@@ -93,8 +122,8 @@ export class NativeBrowser {
     signal?: AbortSignal,
   ): Promise<PageBrowserResult> {
     const next = this.tail.then(
-      () => this.execute(request, home, signal),
-      () => this.execute(request, home, signal),
+      () => this.withLock(() => this.execute(request, home, signal)),
+      () => this.withLock(() => this.execute(request, home, signal)),
     );
     this.tail = next.then(
       () => undefined,
@@ -115,6 +144,41 @@ export class NativeBrowser {
     }
   }
 
+  /**
+   * A file per CDP port, because the API and the worker are separate processes. A lock older than
+   * one command belongs to a process that died; remove it and try again.
+   */
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const lock = path.join(tmpdir(), `rakazo-browser-${this.options.port}.lock`);
+    const deadline = Date.now() + LOCK_WAIT_MS;
+    for (;;) {
+      let handle;
+      try {
+        handle = await open(lock, "wx", 0o600);
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error;
+        const age = await stat(lock).then(
+          (info) => Date.now() - info.mtimeMs,
+          () => 0,
+        );
+        if (age > LOCK_STALE_MS) {
+          await unlink(lock).catch(() => undefined);
+          continue;
+        }
+        if (Date.now() > deadline) throw new Error("Timed out waiting for the shared browser");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
+      try {
+        await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
+        return await fn();
+      } finally {
+        await handle.close().catch(() => undefined);
+        await unlink(lock).catch(() => undefined);
+      }
+    }
+  }
+
   private async execute(
     request: PageBrowserCommand,
     home: string,
@@ -130,6 +194,8 @@ export class NativeBrowser {
       const child = spawn(this.options.helper, [helperCommand(request.command)], {
         env: browserEnvironment(home, this.options),
         stdio: ["pipe", "pipe", "pipe"],
+        // Its own process group, so cancellation reaches agent-browser as well.
+        detached: true,
       });
       // The payload never touches argv: element refs, typed text and saved-login origins are
       // readable by any process listing this host's arguments.
@@ -146,13 +212,13 @@ export class NativeBrowser {
       };
       const abort = () =>
         finish(() => {
-          child.kill("SIGKILL");
+          killTree(child);
           reject(new Error("Page browser cancelled"));
         });
       const timer = setTimeout(
         () =>
           finish(() => {
-            child.kill("SIGKILL");
+            killTree(child);
             reject(new Error("Page browser timed out; the page may be busy or blocked by a dialog."));
           }),
         COMMAND_TIMEOUT_MS,
