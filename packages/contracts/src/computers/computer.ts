@@ -61,6 +61,23 @@ export const ComputerStatusSchema = z.object({
   controlledByOther: z.boolean().optional(),
   /** The viewer's own control lease, set only for the person holding it; closing hands it back. */
   controlLeaseId: Id.optional(),
+  /**
+   * The open tabs of a browser shared by several bots, with the bot that opened each. Only set by
+   * a host provider whose browser stands in for the computer; the UI shows them instead of a screen.
+   */
+  browserTabs: z
+    .array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        url: z.string(),
+        botId: Id.nullable().optional(),
+        botName: z.string().nullable().optional(),
+      }),
+    )
+    .optional(),
+  /** True when the host runs one shared browser, so the panel can say so before any tab opens. */
+  browserAvailable: z.boolean().optional(),
 });
 export type ComputerStatus = z.infer<typeof ComputerStatusSchema>;
 

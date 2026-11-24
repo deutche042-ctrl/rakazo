@@ -24,6 +24,9 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  BrowserTabInfo,
+  PageBrowserCommand,
+  PageBrowserResult,
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
@@ -60,6 +63,7 @@ import {
   win32NtRelativeAvailable,
 } from "./desktop-sandbox-win32-path.js";
 import { removeOwnedWorkspaceChildren } from "./desktop-workspace-cleanup.js";
+import { NativeBrowser, nativeBrowserOptions } from "./native-browser.js";
 
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
@@ -117,6 +121,23 @@ async function markStopped(home: string) {
 
 export class DesktopSandboxProvider implements SandboxProvider {
   readonly boxes = new Map<string, DesktopBox>();
+  /**
+   * Present only when this host runs the one shared Chromium. Its absence is what tells the
+   * browser adapter that the computer has no page tools.
+   */
+  pageBrowser?: (
+    computer: ComputerRef,
+    request: PageBrowserCommand,
+    context: AdapterContext,
+  ) => Promise<PageBrowserResult>;
+  /** The tabs of the shared browser, each with the bot that opened it. */
+  browserTabs?: () => Promise<BrowserTabInfo[]>;
+  /** Whether the shared browser is showing a live tab this bot owns, for the preview gate. */
+  browserOwnsTab?: (botId: string) => Promise<boolean>;
+  /** Brings this bot's tab in the shared browser to the front. */
+  focusBrowserTab?: (botId: string) => Promise<boolean>;
+  /** The shared browser, when this host has one: frames and input for the panel. */
+  private readonly nativeBrowser?: NativeBrowser;
   private readonly processTrees = new Map<NativeProcessTree, { home: string; runId?: string }>();
   private processSweep?: NodeJS.Timeout;
 
@@ -167,7 +188,23 @@ export class DesktopSandboxProvider implements SandboxProvider {
 
   constructor(
     private readonly opts: { root?: string; hostRoots?: string[]; maxFileBytes?: number } = {},
-  ) {}
+  ) {
+    const browser = nativeBrowserOptions();
+    if (browser) {
+      const engine = new NativeBrowser(browser);
+      this.nativeBrowser = engine;
+      const boxFor = (computer: ComputerRef) => this.boxFor(computer);
+      this.pageBrowser = (computer, request, context) => {
+        const box = boxFor(computer);
+        return box
+          ? engine.run(request, box.home, context.botId ?? computer.botId, context.signal)
+          : Promise.reject(new Error("computer not found"));
+      };
+      this.browserTabs = () => engine.listTabs();
+      this.browserOwnsTab = (botId) => engine.ownsTab(botId);
+      this.focusBrowserTab = (botId) => engine.focusTab(botId);
+    }
+  }
 
   describe() {
     return describeDesktopSandbox();
@@ -340,20 +377,64 @@ export class DesktopSandboxProvider implements SandboxProvider {
     computer: ComputerRef,
     input: ComputerInput,
     _lease: ControlLeaseRef,
-    _context: AdapterContext,
+    context: AdapterContext,
   ): Promise<void> {
+    if (this.nativeBrowser) {
+      await this.nativeBrowser.input(context.botId ?? computer.botId, input);
+      return;
+    }
     const box = this.boxFor(computer);
     if (box) applyPlaceholderAction(box, input);
   }
 
-  async observe(computer: ComputerRef) {
-    return placeholderObservation(this.requiredBox(computer).screen);
+  async observe(computer: ComputerRef, context?: AdapterContext) {
+    const box = this.requiredBox(computer);
+    if (this.nativeBrowser) {
+      const frame = await this.nativeBrowser.capture(context?.botId ?? computer.botId);
+      if (!frame) {
+        // A dead browser must not look like a one-pixel screen: preview then returns null and the
+        // panel offers to start it.
+        throw new Error("The shared browser is not running, or this bot has no tab yet");
+      }
+      return {
+        frameId: `${computer.botId}-${Date.now()}`,
+        capturedAt: new Date().toISOString(),
+        mimeType: frame.mimeType,
+        image: frame.image,
+        width: frame.width,
+        height: frame.height,
+        activeWindow: { id: "browser", title: "Shared browser" },
+      };
+    }
+    return placeholderObservation(box.screen);
   }
 
-  async act(computer: ComputerRef, request: ComputerActionRequest, _context: AdapterContext) {
+  async act(computer: ComputerRef, request: ComputerActionRequest, context: AdapterContext) {
     const box = this.requiredBox(computer);
     const actions = boundedComputerActions(request.actions);
-    for (const action of actions) applyPlaceholderAction(box, action);
+    for (const action of actions) {
+      // A scroll is real wheel input on the shared page; every other action stays a placeholder
+      // until this provider can drive the host desktop itself.
+      if (this.nativeBrowser && action.kind === "scroll") {
+        const notches =
+          action.amount !== undefined && Number.isFinite(action.amount) && action.amount > 0
+            ? action.amount
+            : 1;
+        const distance = 100 * notches;
+        const deltaX =
+          action.direction === "left" ? -distance : action.direction === "right" ? distance : 0;
+        const deltaY =
+          action.direction === "up" ? -distance : action.direction === "down" ? distance : 0;
+        await this.nativeBrowser.scroll(context.botId ?? computer.botId, {
+          x: action.x,
+          y: action.y,
+          deltaX,
+          deltaY,
+        });
+      } else {
+        applyPlaceholderAction(box, action);
+      }
+    }
     return {
       completed: actions.length,
       ...(request.observe === false ? {} : { observation: await this.observe(computer) }),

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Entry point of the Rakazo launcher AppImage.
+#
+# The AppImage bundles no server: it starts the Rakazo native stack that already lives on this
+# machine, waits for the web UI, and opens it in the browser.
+#
+#   1. If the systemd user service `rakazo-native` is installed, start (or reuse) it.
+#   2. Otherwise, if <RAKAZO_HOME>/scripts/native/start.sh exists, run it in the background.
+#      RAKAZO_HOME defaults to ~/Documents/my-bots-rakazo/rakazo.
+#   3. Wait up to RAKAZO_WAIT_SECONDS (default 90) for http://127.0.0.1:5173, then xdg-open it.
+#
+# Nothing secret is read or printed here; credentials stay in the checkout's .env.
+set -uo pipefail
+
+URL="${RAKAZO_URL:-http://127.0.0.1:5173}"
+SERVICE="rakazo-native.service"
+WAIT_SECONDS="${RAKAZO_WAIT_SECONDS:-90}"
+DEFAULT_HOME="$HOME/Documents/my-bots-rakazo/rakazo"
+RAKAZO_HOME="${RAKAZO_HOME:-$DEFAULT_HOME}"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/rakazo"
+LOG="$LOG_DIR/launcher.log"
+
+if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+  LOG="/dev/null"
+fi
+
+log() {
+  printf '[rakazo] %s\n' "$*" >&2
+  printf '%s %s\n' "$(date -Is 2>/dev/null || date)" "$*" >>"$LOG" 2>/dev/null || true
+}
+
+service_installed() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl --user list-unit-files "$SERVICE" 2>/dev/null | grep -q "^${SERVICE}"
+}
+
+http_ready() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -o /dev/null -m 2 "$URL/" >/dev/null 2>&1
+    return $?
+  fi
+  # No curl: any TCP answer on the port is good enough to try the browser.
+  local hostport host port
+  hostport="${URL#*://}"
+  hostport="${hostport%%/*}"
+  host="${hostport%%:*}"
+  port="${hostport##*:}"
+  timeout 2 bash -c "exec 3<>/dev/tcp/${host}/${port}" >/dev/null 2>&1
+}
+
+started=0
+
+if service_installed; then
+  log "starting the systemd user service $SERVICE"
+  if systemctl --user start "$SERVICE"; then
+    started=1
+  else
+    log "systemctl could not start $SERVICE; falling back to the start script"
+  fi
+fi
+
+if [ "$started" -eq 0 ] && [ -f "$RAKAZO_HOME/scripts/native/start.sh" ]; then
+  log "starting $RAKAZO_HOME/scripts/native/start.sh in the background"
+  if ( cd "$RAKAZO_HOME" && setsid nohup bash scripts/native/start.sh >>"$LOG" 2>&1 </dev/null & ); then
+    started=1
+  fi
+fi
+
+if [ "$started" -eq 0 ]; then
+  cat >&2 <<EOF
+
+Rakazo is not set up on this machine.
+
+Looked for:
+  - the systemd user service $SERVICE
+  - $RAKAZO_HOME/scripts/native/start.sh
+
+Install the native stack once, then start this AppImage again:
+
+  git clone https://github.com/deutche042-ctrl/rakazo.git "$DEFAULT_HOME"
+  cd "$DEFAULT_HOME"
+  node scripts/native/setup-env.mjs
+  bash scripts/native/install-service.sh
+
+Or point this launcher at an existing checkout:
+
+  RAKAZO_HOME=/path/to/rakazo "$0"
+EOF
+  exit 1
+fi
+
+log "waiting up to ${WAIT_SECONDS}s for $URL"
+ready=0
+for _ in $(seq 1 "$WAIT_SECONDS"); do
+  if http_ready; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "$ready" -eq 0 ]; then
+  log "Rakazo did not answer at $URL within ${WAIT_SECONDS}s; it may still be starting."
+  log "Logs: journalctl --user -u $SERVICE -f   (service) or tail -f $LOG"
+  exit 1
+fi
+
+log "Rakazo is up at $URL"
+
+if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$URL" >/dev/null 2>&1 || log "xdg-open failed; open $URL manually"
+else
+  log "No graphical session detected; open $URL in a browser."
+fi

@@ -139,6 +139,12 @@ async function createBaseRunSandbox(
 
 export class HostAwareSandbox implements SandboxProvider {
   readonly pageBrowser?: SandboxProvider["pageBrowser"];
+  /** The shared browser lives on the host, so its tab list comes from there. */
+  readonly browserTabs?: SandboxProvider["browserTabs"];
+  /** The shared browser lives on the host, so whether this bot owns a tab comes from there. */
+  readonly browserOwnsTab?: SandboxProvider["browserOwnsTab"];
+  /** The shared browser lives on the host, so focusing this bot's tab happens there. */
+  readonly focusBrowserTab?: SandboxProvider["focusBrowserTab"];
 
   constructor(
     private readonly isolated: SandboxProvider,
@@ -158,6 +164,12 @@ export class HostAwareSandbox implements SandboxProvider {
             });
       };
     }
+    const tabs = host.browserTabs?.bind(host) ?? isolated.browserTabs?.bind(isolated);
+    if (tabs) this.browserTabs = () => tabs();
+    const ownsTab = host.browserOwnsTab?.bind(host) ?? isolated.browserOwnsTab?.bind(isolated);
+    if (ownsTab) this.browserOwnsTab = (botId) => ownsTab(botId);
+    const focusTab = host.focusBrowserTab?.bind(host) ?? isolated.focusBrowserTab?.bind(isolated);
+    if (focusTab) this.focusBrowserTab = (botId) => focusTab(botId);
   }
 
   ownsReference(computer: Pick<ComputerRef, "kind" | "providerRef">) {

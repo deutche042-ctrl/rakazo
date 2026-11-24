@@ -172,6 +172,12 @@ export async function refreshComputerProvider(sandbox: SandboxProvider) {
 /** Resolve settings per operation; retain only the adapter for each current ciphertext. */
 export class ConfiguredSandbox implements SandboxProvider {
   readonly pageBrowser?: SandboxProvider["pageBrowser"];
+  /** Forwarded from the deployment's own provider so the panel can list the shared browser's tabs. */
+  readonly browserTabs?: SandboxProvider["browserTabs"];
+  /** Forwarded with `browserTabs`, so a preview can require a tab this bot owns. */
+  readonly browserOwnsTab?: SandboxProvider["browserOwnsTab"];
+  /** Forwarded with `browserTabs`, so a caller can bring this bot's tab to the front. */
+  readonly focusBrowserTab?: SandboxProvider["focusBrowserTab"];
   private selection: ComputerProviderSelection = { provider: "default", settings: null };
   private selectionLoadedAt = 0;
   private selected?: SandboxProvider;
@@ -214,6 +220,12 @@ export class ConfiguredSandbox implements SandboxProvider {
               error: "Page browser is unavailable on this computer.",
             };
       };
+    const tabs = primary.browserTabs?.bind(primary);
+    if (tabs) this.browserTabs = () => tabs();
+    const ownsTab = primary.browserOwnsTab?.bind(primary);
+    if (ownsTab) this.browserOwnsTab = (botId) => ownsTab(botId);
+    const focusTab = primary.focusBrowserTab?.bind(primary);
+    if (focusTab) this.focusBrowserTab = (botId) => focusTab(botId);
   }
   /** Rereads everything now; a save on this instance calls it so its change applies at once. */
   async refresh() {

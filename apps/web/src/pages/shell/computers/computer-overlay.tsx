@@ -4,6 +4,7 @@ import type { Bot, ComputerReleaseReason, ComputerStatus, TaughtSkill } from "@r
 import { computerPreviewPlaceholder } from "@rakazo/i18n/computer-preview";
 import { computerLabel } from "@rakazo/i18n/computer-usage";
 import { BotAvatar, Button } from "@rakazo/ui-web";
+import { useMutation } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { SaveScreenshotButton } from "../../../components/computers/SaveScreenshotButton";
@@ -20,6 +21,9 @@ import {
   desktopBridge,
   windowChromeKind,
 } from "../../../lib/platform/desktop";
+import { useSpaceQueries } from "../../../lib/query/query";
+import { errorCode } from "../../../lib/query/user-error";
+import { BrowserLiveFrame } from "./computer-panel";
 import { ComputerReleaseActions } from "./computer-release-actions";
 import { DesktopKindEmptyState } from "./computer-view";
 
@@ -75,6 +79,11 @@ export function ComputerOverlay({
   onRefreshTeaching,
   onClose,
 }: ComputerOverlayProps) {
+  const queries = useSpaceQueries();
+  const sendInput = useMutation(queries.computer.input.mutationOptions());
+  // A refused input means this tab no longer holds the lease the screen was drawn for, so offer
+  // Take control rather than leaving a frame that silently ignores every click.
+  const inputForbidden = sendInput.isError === true && errorCode(sendInput.error) === "FORBIDDEN";
   // The picture is taken on the server from the running computer, so it does not wait for the frame
   // to connect; a user's own machine has no screen here to take.
   const canSaveScreenshot = !runsOnUserMachine(computer) && computer?.state === "running";
@@ -143,7 +152,7 @@ export function ComputerOverlay({
             ) : null}
             {recordingSkill ? (
               <TeachStopButton busy={teachBusy} onStop={onStopTeaching} />
-            ) : hasControl ? (
+            ) : hasControl && !inputForbidden ? (
               <ComputerReleaseActions
                 takeoverRequested={Boolean(computer?.takeoverRequested)}
                 onRelease={onRelease}
@@ -154,7 +163,11 @@ export function ComputerOverlay({
                 variant="outline"
                 size="sm"
                 disabled={booting}
-                onClick={() => void onTakeControl()}
+                onClick={() => {
+                  // Let the next attempt clear the refused input and ask for control again.
+                  sendInput.reset();
+                  onTakeControl();
+                }}
               >
                 <Trans>Take control</Trans>
               </Button>
@@ -193,7 +206,15 @@ export function ComputerOverlay({
         ) : null}
         <div className="relative min-h-0 flex-1 bg-background">
           {runsOnUserMachine(computer) ? (
-            <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-body text-muted-foreground/80" />
+            computer?.kind === "desktop" && computer.state === "running" ? (
+              <BrowserLiveFrame
+                bot={bot}
+                interactive={hasControl && !inputForbidden}
+                onInput={(kind, payload) => sendInput.mutate({ botId: bot.id, kind, payload })}
+              />
+            ) : (
+              <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-body text-muted-foreground/80" />
+            )
           ) : computer?.state === "running" && embeddedScreenUrl && !computerScreenError ? (
             <>
               {screenFrames(screenFrameKey, embeddedScreenUrl, heldScreen).map((frame) => (
@@ -208,7 +229,10 @@ export function ComputerOverlay({
                   className={`h-full w-full border-0 bg-black${frame.held ? " absolute inset-0" : ""}`}
                   allow="clipboard-read; clipboard-write; fullscreen"
                   style={{
-                    pointerEvents: frame.held || recordingSkill || !hasControl ? "none" : "auto",
+                    pointerEvents:
+                      frame.held || recordingSkill || !hasControl || inputForbidden
+                        ? "none"
+                        : "auto",
                   }}
                 />
               ))}

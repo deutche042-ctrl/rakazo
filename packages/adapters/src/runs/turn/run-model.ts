@@ -481,6 +481,9 @@ export function resolvedModelRunFields(
   resolved: Awaited<ReturnType<typeof resolveModelKey>>,
   thinkingLevel?: string | null,
 ): Omit<AgentRunRequest["model"], "provider" | "id"> {
+  const effectiveThinkingLevel = (thinkingLevel ??
+    resolved.thinkingLevel ??
+    null) as AgentRunRequest["model"]["thinkingLevel"];
   return {
     connectionId: resolved.connectionId,
     billing: resolved.billing,
@@ -497,13 +500,15 @@ export function resolvedModelRunFields(
     allowPrivateEndpoint: resolved.allowPrivateEndpoint,
     cacheCapabilities: resolved.cacheCapabilities,
     contextWindow: resolved.contextWindow,
-    reasoning: resolved.reasoning,
+    // Choosing a level is what enables thinking on a custom endpoint, whose saved settings may
+    // still say it cannot think. Without this the level would be clamped back to off.
+    reasoning:
+      resolved.reasoning ||
+      (effectiveThinkingLevel !== null && effectiveThinkingLevel !== "off"),
     maxTokens: resolved.maxTokens,
     acceptsImages: resolved.acceptsImages,
     maxImagesPerPrompt: resolved.maxImagesPerPrompt,
-    thinkingLevel: (thinkingLevel ??
-      resolved.thinkingLevel ??
-      null) as AgentRunRequest["model"]["thinkingLevel"],
+    thinkingLevel: effectiveThinkingLevel,
     oauth: resolved.oauth
       ? {
           credential: resolved.oauth,

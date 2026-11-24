@@ -86,7 +86,31 @@ export async function computerStatus(
     }),
     spaceIsShared(deps.prisma, actor.spaceId),
   ]);
-  return toComputerStatus(botId, bot.computer, work, shared, actor.userId);
+  const status = toComputerStatus(botId, bot.computer, work, shared, actor.userId);
+  // A host provider whose browser stands in for the computer lists its tabs. Names come from the
+  // bots themselves, so the panel can say who opened each tab.
+  if (!deps.sandbox.browserTabs) return status;
+  const tabs = await deps.sandbox.browserTabs().catch(() => []);
+  if (!tabs.length) return { ...status, browserAvailable: true };
+  const owners = [...new Set(tabs.map((tab) => tab.botId).filter((id): id is string => Boolean(id)))];
+  const names =
+    owners.length && deps.prisma.bot
+      ? await deps.prisma.bot
+          .findMany({ where: { id: { in: owners } }, select: { id: true, name: true } })
+          .catch(() => [])
+      : [];
+  const nameById = new Map(names.map((bot) => [bot.id, bot.name]));
+  return {
+    ...status,
+    browserAvailable: true,
+    browserTabs: tabs.map((tab) => ({
+      id: tab.id,
+      title: tab.title,
+      url: tab.url,
+      botId: tab.botId ?? null,
+      botName: tab.botId ? (nameById.get(tab.botId) ?? null) : null,
+    })),
+  };
 }
 
 /** Whether this person holds this bot's user control, so they may drive its screen. */

@@ -195,6 +195,10 @@ export type ComputerInput =
       x: number;
       y: number;
       button?: "left" | "right";
+      /** The button bitmask held during the event, so a move can drag instead of hover. */
+      buttons?: number;
+      /** 2 for a double click, so the page sees one rather than two separate clicks. */
+      clickCount?: number;
       type: "move" | "down" | "up" | "click";
     }
   | { kind: "clipboard"; text: string };
@@ -1532,6 +1536,15 @@ export interface BrowserSnapshotNode {
   options?: Array<{ label: string; value: string; selected?: boolean; disabled?: boolean }>;
   /** How many options a long select has, when only the first ones and the chosen one are listed. */
   optionsTotal?: number;
+}
+
+/** One tab on a browser shared by several bots, and the bot that opened it when known. */
+export interface BrowserTabInfo {
+  /** The CDP target id. */
+  id: string;
+  title: string;
+  url: string;
+  botId?: string | null;
 }
 
 export interface BrowserSnapshotResult {
