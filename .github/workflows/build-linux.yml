@@ -76,7 +76,7 @@ jobs:
 
           # appimagetool validates AppStream metadata when appstreamcli is present, so ship a
           # minimal metainfo file instead of letting it warn about a missing one.
-          cat > "$APPDIR/usr/share/metainfo/rakazo.appdata.xml" <<'APPSTREAM'
+          cat > "$APPDIR/usr/share/metainfo/com.rakazo.app.metainfo.xml" <<'APPSTREAM'
           <?xml version="1.0" encoding="UTF-8"?>
           <component type="desktop-application">
             <id>com.rakazo.app</id>
