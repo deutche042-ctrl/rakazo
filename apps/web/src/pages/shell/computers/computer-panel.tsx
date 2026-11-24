@@ -3,7 +3,7 @@ import { Trans } from "@lingui/react/macro";
 import type { Bot, ComputerStatus } from "@rakazo/contracts";
 import { computerPreviewPlaceholder } from "@rakazo/i18n/computer-preview";
 import { BotAvatar, Button } from "@rakazo/ui-web";
-import { HardDrive, Maximize2, X } from "lucide-react";
+import { Globe, HardDrive, Maximize2, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { ComputersUnavailableHint } from "../../../components/computers/ComputersUnavailableHint";
 import { runsOnUserMachine } from "../../../lib/computers/computer-sandbox";
@@ -42,10 +42,11 @@ export function ComputerPanel({
 }: ComputerPanelProps) {
   const percent = props.computer?.diskFullPercent;
   const warn = percent !== undefined && onCleanUpDisk && onDismissDiskWarning;
+  const tabs = props.computer?.browserTabs ?? [];
   // The preview keeps its place either way, so the warning never remounts the live screen.
   return (
     <>
-      <ComputerPreview {...props} />
+      {tabs.length ? <BrowserTabsPanel tabs={tabs} /> : <ComputerPreview {...props} />}
       {warn && (
         <div
           data-testid="computer-disk-warning"
@@ -69,6 +70,42 @@ export function ComputerPanel({
         </div>
       )}
     </>
+  );
+}
+
+/** The shared browser's open tabs, each labelled with the bot that opened it. */
+function BrowserTabsPanel({ tabs }: { tabs: NonNullable<ComputerStatus["browserTabs"]> }) {
+  return (
+    <div
+      data-testid="browser-tabs"
+      className="overflow-hidden rounded-xl border border-border/60 bg-muted/30"
+    >
+      <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-caption font-medium text-muted-foreground">
+        <Globe size={14} strokeWidth={1.9} aria-hidden />
+        <Trans>Shared browser</Trans>
+      </div>
+      <ul className="divide-y divide-border/50">
+        {tabs.map((tab) => {
+          let host = tab.url;
+          try {
+            host = new URL(tab.url).host || tab.url;
+          } catch {
+            // A tab whose URL cannot be parsed still gets its title.
+          }
+          return (
+            <li key={tab.id} className="flex items-center gap-2 px-3 py-2 text-body">
+              <span className="max-w-[38%] shrink-0 truncate rounded-full bg-background px-2 py-0.5 text-caption text-muted-foreground">
+                {tab.botName ?? <Trans>Unclaimed</Trans>}
+              </span>
+              <span className="min-w-0 flex-1 truncate">{tab.title || tab.url}</span>
+              <span className="max-w-[38%] shrink-0 truncate text-caption text-muted-foreground">
+                {host}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

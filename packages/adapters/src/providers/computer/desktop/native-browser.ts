@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { open, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { PageBrowserCommand, PageBrowserResult } from "@rakazo/adapter-kit";
+import type { BrowserTabInfo, PageBrowserCommand, PageBrowserResult } from "@rakazo/adapter-kit";
 
 /** The supervisor's own limits, so a native page browser answers like the in-container one. */
 const MAX_OUTPUT_BYTES = 512 * 1024;
@@ -90,6 +90,45 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+/** One lock per display, because the API and the worker are separate processes. */
+export function browserLockPath(port: number): string {
+  return path.join(tmpdir(), `rakazo-browser-${port}.lock`);
+}
+
+/**
+ * Runs `fn` while holding an exclusive lock file. A lock older than one command belongs to a
+ * process that died; remove it and try again.
+ */
+export async function withBrowserLock<T>(lock: string, fn: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    let handle;
+    try {
+      handle = await open(lock, "wx", 0o600);
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+      const age = await stat(lock).then(
+        (info) => Date.now() - info.mtimeMs,
+        () => 0,
+      );
+      if (age > LOCK_STALE_MS) {
+        await unlink(lock).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error("Timed out waiting for the shared browser");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      continue;
+    }
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
+      return await fn();
+    } finally {
+      await handle.close().catch(() => undefined);
+      await unlink(lock).catch(() => undefined);
+    }
+  }
+}
+
 /** Kills the helper and the agent-browser it started, not just the helper. */
 function killTree(child: ReturnType<typeof spawn>) {
   if (!child.pid) return;
@@ -107,6 +146,10 @@ function killTree(child: ReturnType<typeof spawn>) {
 
 export class NativeBrowser {
   private tail: Promise<unknown> = Promise.resolve();
+  /** Target id → the bot that last worked in that tab. */
+  private readonly owned = new Map<string, string>();
+  /** Bot → the tab it last worked in, so a snapshot keeps the same attribution. */
+  private readonly botTab = new Map<string, string>();
 
   constructor(private readonly options: NativeBrowserOptions) {}
 
@@ -119,17 +162,80 @@ export class NativeBrowser {
   run(
     request: PageBrowserCommand,
     home: string,
+    botId: string,
     signal?: AbortSignal,
   ): Promise<PageBrowserResult> {
-    const next = this.tail.then(
-      () => this.withLock(() => this.execute(request, home, signal)),
-      () => this.withLock(() => this.execute(request, home, signal)),
-    );
+    const work = () =>
+      this.withLock(async () => {
+        // A tab this command creates or navigates is the bot's; a snapshot keeps the previous one.
+        const before = await this.tabUrls();
+        const result = await this.execute(request, home, signal);
+        await this.rememberOwner(botId, before);
+        return result;
+      });
+    const next = this.tail.then(work, work);
     this.tail = next.then(
       () => undefined,
       () => undefined,
     );
     return next;
+  }
+
+  /** The open tabs, each with the bot that opened it when one was seen working there. */
+  async listTabs(): Promise<BrowserTabInfo[]> {
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.options.port}/json/list`, {
+        signal: AbortSignal.timeout(2_000),
+      });
+      const tabs = (await response.json()) as Array<{
+        id?: unknown;
+        title?: unknown;
+        url?: unknown;
+        type?: unknown;
+      }>;
+      if (!Array.isArray(tabs)) return [];
+      const open = new Set<string>();
+      const result: BrowserTabInfo[] = [];
+      for (const tab of tabs) {
+        if (tab.type !== "page" || typeof tab.id !== "string") continue;
+        const url = typeof tab.url === "string" ? tab.url : "";
+        const title = typeof tab.title === "string" ? tab.title : "";
+        // Chromium starts on a blank tab; it is not something a bot opened.
+        if (url === "about:blank" && !title) continue;
+        open.add(tab.id);
+        result.push({
+          id: tab.id,
+          title,
+          url,
+          botId: this.owned.get(tab.id) ?? null,
+        });
+      }
+      for (const id of this.owned.keys()) if (!open.has(id)) this.owned.delete(id);
+      return result;
+    } catch {
+      return [];
+    }
+  }
+
+  private async tabUrls(): Promise<Map<string, string>> {
+    const tabs = await this.listTabs();
+    return new Map(tabs.map((tab) => [tab.id, tab.url]));
+  }
+
+  private async rememberOwner(botId: string, before: Map<string, string>) {
+    const after = await this.tabUrls();
+    let target: string | undefined;
+    for (const [id, url] of after) {
+      if (before.get(id) !== url) {
+        target = id;
+        break;
+      }
+    }
+    if (!target) target = this.botTab.get(botId);
+    if (target && after.has(target)) {
+      this.botTab.set(botId, target);
+      this.owned.set(target, botId);
+    }
   }
 
   /** True while the shared Chromium answers on its loopback port. */
@@ -144,39 +250,8 @@ export class NativeBrowser {
     }
   }
 
-  /**
-   * A file per CDP port, because the API and the worker are separate processes. A lock older than
-   * one command belongs to a process that died; remove it and try again.
-   */
-  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
-    const lock = path.join(tmpdir(), `rakazo-browser-${this.options.port}.lock`);
-    const deadline = Date.now() + LOCK_WAIT_MS;
-    for (;;) {
-      let handle;
-      try {
-        handle = await open(lock, "wx", 0o600);
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
-        const age = await stat(lock).then(
-          (info) => Date.now() - info.mtimeMs,
-          () => 0,
-        );
-        if (age > LOCK_STALE_MS) {
-          await unlink(lock).catch(() => undefined);
-          continue;
-        }
-        if (Date.now() > deadline) throw new Error("Timed out waiting for the shared browser");
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        continue;
-      }
-      try {
-        await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
-        return await fn();
-      } finally {
-        await handle.close().catch(() => undefined);
-        await unlink(lock).catch(() => undefined);
-      }
-    }
+  private withLock<T>(fn: () => Promise<T>): Promise<T> {
+    return withBrowserLock(browserLockPath(this.options.port), fn);
   }
 
   private async execute(

@@ -24,6 +24,7 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  BrowserTabInfo,
   PageBrowserCommand,
   PageBrowserResult,
   SandboxProvider,
@@ -129,6 +130,8 @@ export class DesktopSandboxProvider implements SandboxProvider {
     request: PageBrowserCommand,
     context: AdapterContext,
   ) => Promise<PageBrowserResult>;
+  /** The tabs of the shared browser, each with the bot that opened it. */
+  browserTabs?: () => Promise<BrowserTabInfo[]>;
   private readonly processTrees = new Map<NativeProcessTree, { home: string; runId?: string }>();
   private processSweep?: NodeJS.Timeout;
 
@@ -187,9 +190,10 @@ export class DesktopSandboxProvider implements SandboxProvider {
       this.pageBrowser = (computer, request, context) => {
         const box = boxFor(computer);
         return box
-          ? engine.run(request, box.home, context.signal)
+          ? engine.run(request, box.home, computer.botId, context.signal)
           : Promise.reject(new Error("computer not found"));
       };
+      this.browserTabs = () => engine.listTabs();
     }
   }
 

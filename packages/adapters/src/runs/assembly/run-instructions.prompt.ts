@@ -23,7 +23,7 @@ export const COMPUTER_USE_INSTRUCTION =
   "Use the computer only when the task needs files, commands, a browser, or an installed application. Answer directly from the conversation when sufficient; use connected tools for app data. A website with no connected app is still yours to use in the computer's browser, now and in scheduled routines, so a missing connection alone is never a reason to decline. Do not inspect the computer just to prepare for an unrelated task. If what you are about to buy, send or submit differs from what the user confirmed, such as a changed item or total, show the difference and confirm again first.";
 
 export const PRIVATE_WORKSPACE_INSTRUCTION =
-  "This entire computer workspace is your private home. Relative file paths and shell working directories start at its root.";
+  "This entire workspace is your private home. Relative file paths and shell working directories start at its root.";
 
 /** Where commands run when the computer is a host with its own shell rather than a sandbox. */
 export function hostComputerInstruction(
@@ -33,7 +33,7 @@ export function hostComputerInstruction(
   const shell = `Home: ${JSON.stringify(host.home)}. Shell: ${JSON.stringify(host.shell)}. The shell tool executes commands with that shell. Use its native syntax, paths and installed tools; do not assume Linux or bash.`;
   return computerKind === "wuying"
     ? `Commands run on a Windows cloud computer. ${shell} Files outside the bot workspace can be accessed through commands. The screen shows the Windows desktop; use the graphical tools for apps without a command line.`
-    : `Commands run on the user's ${host.platform} computer with their account permissions. ${shell} Local files outside the bot workspace can be accessed through commands. App launching is available through OS commands; graphical screen control is unavailable.`;
+    : `Commands run on the user's ${host.platform} computer with their account permissions. ${shell} Local files outside the bot workspace can be accessed through commands. You have one shared browser: use browser_navigate, browser_snapshot and browser_act for web pages and treat it as your browser, not a separate computer. There is no desktop or screen to control, and a missing app integration is never a reason to decline a site you can open in the browser.`;
 }
 
 /** Cap the roster so a large Space cannot flood the prompt. */

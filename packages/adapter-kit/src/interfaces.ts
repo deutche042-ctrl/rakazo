@@ -65,6 +65,7 @@ import type {
   NotificationMessage,
   PageBrowserCommand,
   PageBrowserResult,
+  BrowserTabInfo,
   PortableFile,
   ProcessEvent,
   SandboxCapabilities,
@@ -131,6 +132,11 @@ export interface SandboxProvider {
     request: PageBrowserCommand,
     context: AdapterContext,
   ): Promise<PageBrowserResult>;
+  /**
+   * The open tabs of a browser shared by several bots, and the bot that opened each. Absent when
+   * the provider runs a browser per computer, where the screen already shows the tabs.
+   */
+  browserTabs?(): Promise<BrowserTabInfo[]>;
   /** Allocate or reconnect the computer, returning its reference before fallible setup. */
   provision(
     request: {

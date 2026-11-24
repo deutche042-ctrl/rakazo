@@ -1534,6 +1534,15 @@ export interface BrowserSnapshotNode {
   optionsTotal?: number;
 }
 
+/** One tab on a browser shared by several bots, and the bot that opened it when known. */
+export interface BrowserTabInfo {
+  /** The CDP target id. */
+  id: string;
+  title: string;
+  url: string;
+  botId?: string | null;
+}
+
 export interface BrowserSnapshotResult {
   url: string;
   title: string;
