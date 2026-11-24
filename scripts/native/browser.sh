@@ -37,16 +37,29 @@ fi
 mkdir -p "$PROFILE" "$CACHE"
 chmod 700 "$PROFILE" "$CACHE" 2>/dev/null || true
 echo "[browser] starting Chromium on 127.0.0.1:${PORT}"
+# A real headful Chrome, as openbot runs, reports a normal Chrome UA. Headless reports
+# "HeadlessChrome", which Google refuses to sign in. Use the display when there is one.
+MODE=(--window-size=1280,900 --window-position=0,0)
+if [ -n "${DISPLAY:-}" ]; then
+  # Chrome 158 otherwise picks Wayland and warns that it is incompatible with Vulkan.
+  MODE+=(--ozone-platform=x11)
+elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  MODE+=(--ozone-platform=wayland)
+fi
+if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+  MODE=(--headless=new --disable-gpu)
+  echo "[browser] mode: headless (no display)"
+else
+  echo "[browser] mode: headful (${DISPLAY:-$WAYLAND_DISPLAY})"
+fi
 nohup "$CHROME" \
-  --headless=new \
+  "${MODE[@]}" \
   --remote-debugging-port="$PORT" \
   --remote-debugging-address=127.0.0.1 \
   --user-data-dir="$PROFILE" \
   --disk-cache-dir="$CACHE" \
   --no-first-run \
   --no-default-browser-check \
-  --disable-gpu \
-  --window-size=1280,900 \
   about:blank >"$LOG" 2>&1 &
 echo $! > "$PIDFILE"
 

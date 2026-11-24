@@ -25,6 +25,10 @@ export const COMPUTER_USE_INSTRUCTION =
 export const PRIVATE_WORKSPACE_INSTRUCTION =
   "This entire workspace is your private home. Relative file paths and shell working directories start at its root.";
 
+/** Google refuses a sign-in from an automated browser, so a retry can only be refused again. */
+const GOOGLE_SIGNIN_BROWSER_INSTRUCTION =
+  "Never sign in to a Google account in the browser: Google blocks automated browsers. Use the connected Google app (OAuth) in Integrations instead, and never retry a rejected sign-in.";
+
 /** Where commands run when the computer is a host with its own shell rather than a sandbox. */
 export function hostComputerInstruction(
   computerKind: string | undefined,
@@ -32,8 +36,8 @@ export function hostComputerInstruction(
 ): string {
   const shell = `Home: ${JSON.stringify(host.home)}. Shell: ${JSON.stringify(host.shell)}. The shell tool executes commands with that shell. Use its native syntax, paths and installed tools; do not assume Linux or bash.`;
   return computerKind === "wuying"
-    ? `Commands run on a Windows cloud computer. ${shell} Files outside the bot workspace can be accessed through commands. The screen shows the Windows desktop; use the graphical tools for apps without a command line.`
-    : `Commands run on the user's ${host.platform} computer with their account permissions. ${shell} Local files outside the bot workspace can be accessed through commands. You have one shared browser: use browser_navigate, browser_snapshot and browser_act for web pages and treat it as your browser, not a separate computer. A snapshot already covers the whole page, so you never need to scroll to read it; browser_act supports click, fill, type and upload. Never open a page with xdg-open or another desktop browser. There is no desktop or screen to control, and a missing app integration is never a reason to decline a site you can open in the browser.`;
+    ? `Commands run on a Windows cloud computer. ${shell} Files outside the bot workspace can be accessed through commands. The screen shows the Windows desktop; use the graphical tools for apps without a command line. ${GOOGLE_SIGNIN_BROWSER_INSTRUCTION}`
+    : `Commands run on the user's ${host.platform} computer with their account permissions. ${shell} Local files outside the bot workspace can be accessed through commands. You have one shared browser: use browser_navigate, browser_snapshot and browser_act for web pages and treat it as your browser, not a separate computer. A snapshot already covers the whole page, so you never need to scroll to read it; browser_act supports click, fill, type and upload. Never open a page with xdg-open or another desktop browser. There is no desktop or screen to control, and a missing app integration is never a reason to decline a site you can open in the browser. ${GOOGLE_SIGNIN_BROWSER_INSTRUCTION}`;
 }
 
 /** Cap the roster so a large Space cannot flood the prompt. */
