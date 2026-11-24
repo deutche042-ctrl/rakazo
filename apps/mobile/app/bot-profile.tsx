@@ -1,12 +1,14 @@
 import { ph } from "@lingui/core/macro";
 import { useLingui } from "@lingui/react/macro";
-import { displayName } from "@rakazo/core";
+import type { ComputerStatus as ComputerStatusType } from "@rakazo/contracts";
+import { COMPUTER_CONTROL_HEARTBEAT_MS, displayName, isRetryableError } from "@rakazo/core";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import { BotAvatar } from "../components/bots/bot-avatar";
 import { useBotEmail, useBotEmailRows } from "../components/bots/bot-email";
 import { botProfileMenuOptions, useBotProfileActions } from "../components/bots/bot-profile-menu";
+import { BrowserLivePanel } from "../components/computers/browser-live-panel";
 import { glassHeaderOptions } from "../components/native/glass-title";
 import { NativeActionButton } from "../components/native/native-action-button";
 import { NativeSymbol } from "../components/native/native-symbol";
@@ -16,10 +18,13 @@ import {
   SettingsSwitch,
   useStackedSettings,
 } from "../components/settings/settings-group";
+import { rpc } from "../lib/api/api";
 import { errorText } from "../lib/api/user-error";
 import { useNotifyOnFinish } from "../lib/bots/bot-setting";
+import { isSharedBrowser } from "../lib/computers/computer";
 import { useSideInsets } from "../lib/layout/side-insets";
 import { native, useMobileTokens, useThemedStyles } from "../lib/native/native";
+import { useAppForeground } from "../lib/platform/app-foreground";
 import { rpcQuery } from "../lib/query/query";
 import { useScreenQuery } from "../lib/query/screen-query";
 import { useBotRoutines } from "../lib/routines/routine-store";
@@ -46,6 +51,7 @@ function BotProfileScreen() {
   // A stale Running or Asleep is worse than no state, so only this visit's answer shows.
   const computer =
     computerRead.isFetchedAfterMount && !computerRead.isError ? computerRead.data : null;
+  const refreshComputer = useCallback(() => computerRead.refetch(), [computerRead.refetch]);
   const name = displayName(bot?.name ?? nameParam, t`Bot`);
   const { routines } = useBotRoutines(botId);
   const actions = useBotProfileActions(botId, name);
@@ -165,6 +171,9 @@ function BotProfileScreen() {
           onPress={() => router.push({ pathname: "/computer", params: { botId, name } })}
         />
       </SettingsGroup>
+      {computer && isSharedBrowser(computer) && computer.state === "running" ? (
+        <SharedBrowserSection botId={botId} computer={computer} refresh={refreshComputer} />
+      ) : null}
       <BotEmailGroup botId={botId} botName={name} />
       {bot ? (
         <SettingsGroup footer={t`Get notified when this Bot finishes or needs input`}>
@@ -190,6 +199,121 @@ function createStyles() {
     avatarSpace: { width: 96, height: 96 },
     name: { color: native.label, fontSize: 22, fontWeight: "600", textAlign: "center" },
   });
+}
+
+/**
+ * The shared browser, shown on the bot's profile: its tabs, a live still, and control the person
+ * can take and hand back without opening the full computer window. Control lasts only while the
+ * app checks in, so the heartbeat runs here as it does on the computer screen.
+ */
+function SharedBrowserSection({
+  botId,
+  computer,
+  refresh,
+}: {
+  botId: string;
+  computer: ComputerStatusType;
+  refresh: () => Promise<unknown>;
+}) {
+  const { t } = useLingui();
+  const foreground = useAppForeground();
+  const [busy, setBusy] = useState(false);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const hasControl =
+    computer.controlHolder === "user" &&
+    computer.controlBotId === botId &&
+    !computer.controlledByOther;
+  const leaseId = computer.controlLeaseId;
+  // Visiting the profile while another screen holds the lease must not hand it back on leave.
+  const tookControl = useRef(false);
+
+  useEffect(() => {
+    if (!hasControl || !foreground) return;
+    const ping = () =>
+      void rpc("computer/heartbeat", { botId }).catch((error: unknown) => {
+        // A refused heartbeat stops until the status changes; re-reading it does that.
+        if (isRetryableError(error)) return;
+        clearInterval(timer);
+        void refreshRef.current().catch(() => undefined);
+      });
+    const timer = setInterval(ping, COMPUTER_CONTROL_HEARTBEAT_MS);
+    ping();
+    return () => clearInterval(timer);
+  }, [botId, foreground, hasControl]);
+
+  // Losing control ends this screen's claim to the lease, even if it took one earlier.
+  useEffect(() => {
+    if (!hasControl) tookControl.current = false;
+  }, [hasControl]);
+
+  // A lease taken on this screen is handed back when the screen leaves it.
+  useEffect(() => {
+    if (!hasControl || !leaseId || !tookControl.current) return;
+    return () => {
+      // A Hand back already ended it; this is for leaving while still holding control.
+      if (!tookControl.current) return;
+      void rpc("computer/release", { botId, leaseId }).catch(() => undefined);
+    };
+  }, [botId, hasControl, leaseId]);
+
+  async function takeControl() {
+    setBusy(true);
+    try {
+      await rpc("computer/takeover", { botId });
+      tookControl.current = true;
+      await refreshRef.current().catch(() => undefined);
+    } catch (error) {
+      Alert.alert(t`Could not take control`, errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handBack() {
+    setBusy(true);
+    try {
+      await rpc("computer/release", { botId, leaseId });
+      tookControl.current = false;
+      await refreshRef.current().catch(() => undefined);
+    } catch (error) {
+      Alert.alert(t`Could not hand back control`, errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={{ gap: 8 }}>
+      <BrowserLivePanel
+        botId={botId}
+        interactive={hasControl}
+        tabs={computer.browserTabs}
+        onForbidden={() => void refreshRef.current().catch(() => undefined)}
+        frameStyle={{ aspectRatio: 16 / 10 }}
+        testID="bot-profile-browser"
+      />
+      <View style={{ alignItems: "flex-end", flexDirection: "row", gap: 8 }}>
+        {hasControl ? (
+          <NativeActionButton
+            label={t`Hand back control`}
+            prominence="secondary"
+            fill={false}
+            busy={busy}
+            onPress={() => void handBack()}
+          />
+        ) : (
+          <NativeActionButton
+            label={t`Take control`}
+            prominence="secondary"
+            fill={false}
+            busy={busy}
+            onPress={() => void takeControl()}
+          />
+        )}
+      </View>
+    </View>
+  );
 }
 
 /** The bot's address; on a server that receives email, offered until claimed. */
