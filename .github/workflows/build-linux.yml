@@ -1,0 +1,134 @@
+name: build-linux
+
+# Builds the launcher AppImage. The AppImage bundles no server: at run time its AppRun starts the
+# native Rakazo stack already installed on the host (systemd user service `rakazo-native`, or
+# <RAKAZO_HOME>/scripts/native/start.sh) and opens http://127.0.0.1:5173.
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [native]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-linux-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: Launcher AppImage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.18.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Assemble the AppDir
+        run: |
+          set -euo pipefail
+          APPDIR="$RUNNER_TEMP/Rakazo.AppDir"
+          rm -rf "$APPDIR"
+          mkdir -p \
+            "$APPDIR/usr/bin" \
+            "$APPDIR/usr/share/applications" \
+            "$APPDIR/usr/share/icons/hicolor/1024x1024/apps" \
+            "$APPDIR/usr/share/metainfo"
+
+          install -m 0755 scripts/appimage/AppRun "$APPDIR/AppRun"
+          # Also expose it as usr/bin/rakazo so the desktop file's Exec= resolves inside the image.
+          install -m 0755 scripts/appimage/AppRun "$APPDIR/usr/bin/rakazo"
+
+          # Reuse the app icon the workspace already ships (1024x1024 PNG).
+          ICON="apps/mobile/assets/icon.png"
+          test -f "$ICON"
+          install -m 0644 "$ICON" "$APPDIR/rakazo.png"
+          cp "$APPDIR/rakazo.png" "$APPDIR/.DirIcon"
+          install -m 0644 "$ICON" "$APPDIR/usr/share/icons/hicolor/1024x1024/apps/rakazo.png"
+
+          cat > "$APPDIR/rakazo.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Rakazo
+          Comment=Open the Rakazo web UI running on this machine
+          Exec=rakazo
+          Icon=rakazo
+          Terminal=false
+          Categories=Network;
+          StartupNotify=true
+          DESKTOP
+          install -m 0644 "$APPDIR/rakazo.desktop" "$APPDIR/usr/share/applications/rakazo.desktop"
+
+          # appimagetool validates AppStream metadata when appstreamcli is present, so ship a
+          # minimal metainfo file instead of letting it warn about a missing one.
+          cat > "$APPDIR/usr/share/metainfo/rakazo.appdata.xml" <<'APPSTREAM'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>com.rakazo.app</id>
+            <metadata_license>CC0-1.0</metadata_license>
+            <project_license>Apache-2.0</project_license>
+            <name>Rakazo</name>
+            <summary>Open the local Rakazo web UI</summary>
+            <description>
+              <p>
+                Launcher for a native Rakazo install. It starts the local Rakazo stack and opens
+                the web UI in the browser once it answers.
+              </p>
+            </description>
+            <launchable type="desktop-id">rakazo.desktop</launchable>
+            <url type="homepage">https://github.com/deutche042-ctrl/rakazo</url>
+            <developer id="com.rakazo.app">
+              <name>Rakazo contributors</name>
+            </developer>
+            <content_rating type="oars-1.1" />
+          </component>
+          APPSTREAM
+
+          find "$APPDIR" -type f -printf '%P\n' | sort
+
+      - name: Download appimagetool
+        run: |
+          set -euo pipefail
+          TOOL="$RUNNER_TEMP/appimagetool-x86_64.AppImage"
+          curl -fsSL -o "$TOOL" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$TOOL"
+          # --appimage-extract-and-run avoids needing FUSE on the runner.
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --version || true
+
+      - name: Build the AppImage
+        run: |
+          set -euo pipefail
+          APPDIR="$RUNNER_TEMP/Rakazo.AppDir"
+          TOOL="$RUNNER_TEMP/appimagetool-x86_64.AppImage"
+          OUT="rakazo-native-x86_64.AppImage"
+          rm -f "$OUT"
+          # No FUSE on GitHub's runners; the env var and the flag both extract-and-run.
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
+            "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUT"
+          test -s "$OUT"
+          file "$OUT"
+          ls -lh "$OUT"
+
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: rakazo-linux-appimage
+          path: rakazo-native-x86_64.AppImage
+          if-no-files-found: error
+          retention-days: 14
