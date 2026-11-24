@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { connectedPluginsInstruction, taughtSkillsInstruction } from "./run-instructions.prompt.js";
+import {
+  connectedPluginsInstruction,
+  hostComputerInstruction,
+  taughtSkillsInstruction,
+} from "./run-instructions.prompt.js";
 
 describe("connectedPluginsInstruction", () => {
   it("names each connected plugin and prefers its tools to browsing", () => {
@@ -32,5 +36,30 @@ describe("taughtSkillsInstruction", () => {
 
   it("adds nothing when no skill was taught", () => {
     expect(taughtSkillsInstruction([])).toBeUndefined();
+  });
+});
+
+describe("hostComputerInstruction", () => {
+  const host = { home: "/home/me", shell: "bash", platform: "linux" };
+
+  it("points a self-hosted Linux host at browser-login.sh and forbids retrying", () => {
+    const instruction = hostComputerInstruction("local", host, { sharedNativeBrowser: true });
+    expect(instruction).toContain("bash scripts/native/browser-login.sh");
+    expect(instruction).toContain("never retry");
+    // A blocked page is a human handoff, not a page to work around or retry.
+    expect(instruction).toContain("stop immediately");
+    expect(instruction).toContain("hand the step to the user");
+  });
+
+  it("points a cloud or non-Linux computer at OAuth and never at a local script", () => {
+    for (const [kind, platform] of [
+      ["wuying", "win32"],
+      ["local", "darwin"],
+    ] as const) {
+      const instruction = hostComputerInstruction(kind, { ...host, platform });
+      expect(instruction).toContain("OAuth");
+      expect(instruction).toContain("stop immediately");
+      expect(instruction).not.toContain("browser-login.sh");
+    }
   });
 });

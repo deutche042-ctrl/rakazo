@@ -32,6 +32,7 @@ import { availableInSpace, itemSecretIn } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { sanitizedError } from "@rakazo/logging/monitoring";
 import { catalogToolPrefix } from "../approvals/approval-effect.js";
+import { browseMcpToolAllowed, isBrowseMcpServer } from "../browse/browse-mcp.js";
 import {
   combineSignals,
   redactConnectorPayload,
@@ -564,8 +565,13 @@ export class McpConnector implements ConnectorProvider {
               { revision: server.revision },
             );
           reportAllowlistDrift(assignment, listed.tools, context);
+          // The browse server only exposes the page-action tools a bot needs. Its assignment may
+          // allow all tools, but that never includes session_adopt (which would hand the panel's
+          // CDP tab to chrome.debugger) or secrets, recording, network and settings.
+          const browseServer = isBrowseMcpServer(server);
           return listed.tools
             .filter((tool) => mcpToolAllowed(assignment, tool.name))
+            .filter((tool) => !browseServer || browseMcpToolAllowed(tool.name))
             .map((tool) => ({
               name: `mcp__${assignment.server.slug}__${tool.name}`,
               description: tool.description ?? tool.name,

@@ -24,9 +24,25 @@ CHROME="$(read_env RAKAZO_NATIVE_CHROME_BIN)"
 PROFILE="$(read_env RAKAZO_NATIVE_BROWSER_PROFILE)"
 CACHE="$(read_env RAKAZO_NATIVE_BROWSER_CACHE)"
 
+# browse's extension lives here once browse-setup.sh has staged it. Without one, Chrome starts
+# exactly as before.
+EXT="$(readlink -f "$STATE/browse-extension/current" 2>/dev/null || true)"
+EXTS=()
+if [ -n "$EXT" ] && [ -f "$EXT/manifest.json" ]; then
+  EXTS+=(--load-extension="$EXT" --disable-extensions-except="$EXT")
+fi
+
 if [ -z "$CHROME" ] || [ -z "$PROFILE" ] || [ -z "$CACHE" ]; then
   echo "[browser] set RAKAZO_NATIVE_CHROME_BIN, RAKAZO_NATIVE_BROWSER_PROFILE and RAKAZO_NATIVE_BROWSER_CACHE in .env" >&2
   exit 1
+fi
+
+# start.sh and the desktop autostart both call this script. Serialize them: the loser would see the
+# port already open and exit, or write a pid for a Chrome that quit under the profile lock.
+if command -v flock >/dev/null 2>&1; then
+  mkdir -p "$STATE"
+  exec 9>"$STATE/browser.lock"
+  flock 9
 fi
 
 if curl -sf -m 2 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
@@ -57,11 +73,14 @@ nohup "$CHROME" \
   --remote-debugging-port="$PORT" \
   --remote-debugging-address=127.0.0.1 \
   --user-data-dir="$PROFILE" \
+  "${EXTS[@]}" \
   --disk-cache-dir="$CACHE" \
   --no-first-run \
   --no-default-browser-check \
-  about:blank >"$LOG" 2>&1 &
-echo $! > "$PIDFILE"
+  about:blank >"$LOG" 2>&1 9>&- &
+# 9>&- keeps the start lock out of Chrome: an inherited descriptor would hold it for as long as the
+# browser lives, and the next call would wait instead of saying it is already running.
+BROWSER_PID=$!
 
 for _ in $(seq 1 60); do
   if curl -sf -m 1 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
@@ -74,10 +93,16 @@ for _ in $(seq 1 60); do
       curl -s -m 2 -X PUT "http://127.0.0.1:${PORT}/json/new?about:blank" >/dev/null 2>&1 || true
       sleep 0.5
     done
+    # The pid reaches the file only once the port answers, so a Chrome that quit at startup never
+    # leaves a pid behind for browser-stop.sh to trust.
+    echo "$BROWSER_PID" >"$PIDFILE"
     echo "[browser] ready"
     exit 0
   fi
   sleep 0.5
 done
+if kill -0 "$BROWSER_PID" 2>/dev/null; then
+  echo "$BROWSER_PID" >"$PIDFILE"
+fi
 echo "[browser] Chromium did not answer on 127.0.0.1:${PORT}; see $LOG" >&2
 exit 1

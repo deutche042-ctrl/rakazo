@@ -375,6 +375,8 @@ export interface StackController {
   matchesDesiredStack(): Promise<boolean>;
   /** True while a stack this app manages may still be running, so the menu offers its off-switch. */
   managedStackRunning(): boolean;
+  /** True while server processes this app started still run, so quitting must stop them first. */
+  hasProcesses?(): boolean;
   start(): Promise<DesktopLocalStackState>;
   stop(): Promise<DesktopLocalStackState>;
   abort(): void;

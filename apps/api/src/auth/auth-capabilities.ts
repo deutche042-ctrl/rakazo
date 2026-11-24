@@ -23,9 +23,8 @@ export function mountAuthCapabilities(
   },
 ) {
   app.get("/api/auth/capabilities", (c) => {
-    const registrationOpen = env.desktopStackToken
-      ? auth.registrationOpen(c.req.raw.headers)
-      : undefined;
+    // The signup policy always applies; a desktop stack token narrows it further in admission.
+    const registrationOpen = auth.registrationOpen(c.req.raw.headers);
     return c.json({
       sso: env.oidc
         ? { name: env.oidc.name, availability: auth.ssoAvailability() ?? "checking" }

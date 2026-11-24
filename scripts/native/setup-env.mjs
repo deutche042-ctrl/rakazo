@@ -75,6 +75,14 @@ setUnlessReal("ENCRYPTION_KEY", () => hex(32));
 setUnlessReal("SCREEN_PROXY_SECRET", () => hex(32));
 setUnlessReal("SANDBOX_SUPERVISOR_TOKEN", () => hex(32));
 set("SANDBOX_PROVIDER", "desktop");
+// The desktop app and the probes are pinned to these ports; naming them turns off port
+// selection in scripts/dev.mjs so the sign-in origin survives relaunches.
+set("WEB_PORT", "5173");
+set("API_PORT", "3100");
+// WebAuthn binds passkeys to `localhost`; the loopback IP would silently disable them.
+set("BETTER_AUTH_URL", "http://localhost:5173");
+set("WEB_ORIGIN", "http://localhost:5173");
+set("API_URL", "http://localhost:3100");
 set("DATA_DIR", dataDir);
 set("EMAIL_EMULATOR", "true");
 set("SIGNUPS_ENABLED", "true");

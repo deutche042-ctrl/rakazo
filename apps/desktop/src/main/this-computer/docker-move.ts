@@ -30,13 +30,14 @@ interface StackFacts {
 }
 
 /**
- * Which stack runs This computer. A Mac that never used Docker, or no longer has it, goes native;
- * one with a Docker stack keeps it unless the person agreed to move ("ask" means they have not
- * been asked yet).
+ * Which stack runs This computer. Linux runs, or adopts, the checkout's own stack, with no Docker
+ * or VM involved. A Mac that never used Docker, or no longer has it, goes native; one with a
+ * Docker stack keeps it unless the person agreed to move ("ask" means they have not been asked yet).
  */
 export function chooseStack(
-  input: StackFacts & { eligible: boolean; nativeStack: boolean },
+  input: StackFacts & { eligible: boolean; nativeStack: boolean; hostStack: boolean },
 ): StackChoice | "ask" {
+  if (input.hostStack) return "native";
   if (!input.eligible) return "docker";
   if (input.nativeStack || !input.dockerStack || !input.dockerInstalled) return "native";
   return input.choice ?? "ask";
@@ -179,6 +180,35 @@ export async function dockerRunning(deps: Omit<DockerMoveDeps, "sleep">): Promis
     timeoutMs: 20_000,
   });
   return info.code === 0;
+}
+
+export interface DockerMoveOfferDeps {
+  stackDir: string;
+  platform: string;
+  env: NodeJS.ProcessEnv;
+  exists: (file: string) => boolean;
+  run: RunDocker;
+  /** Whether the person agreed to move; only asked while Docker answers. */
+  ask: () => Promise<boolean>;
+  /** A choice that cannot be saved is reported, so the next launch asks again. */
+  onWriteError?: (error: unknown) => void;
+}
+
+/**
+ * Asked once, and only of someone running This computer on Docker while Docker answers: a
+ * declined offer is remembered; an accepted one moves the data when the stack next starts.
+ */
+export async function offerDockerMove(deps: DockerMoveOfferDeps): Promise<StackChoice> {
+  if (!(await dockerRunning(deps))) return "docker";
+  const choice: StackChoice = (await deps.ask()) ? "native" : "docker";
+  try {
+    await writeStackChoice(deps.stackDir, choice);
+  } catch (error) {
+    // A move that cannot be remembered would be offered again mid-way; stay on Docker for now.
+    deps.onWriteError?.(error);
+    return "docker";
+  }
+  return choice;
 }
 
 /**

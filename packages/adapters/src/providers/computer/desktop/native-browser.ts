@@ -1,15 +1,23 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import WebSocket from "ws";
 import type {
   BrowserTabInfo,
   ComputerInput,
   PageBrowserCommand,
   PageBrowserResult,
 } from "@rakazo/adapter-kit";
+import WebSocket from "ws";
+import type { LiveBrowserTarget } from "../../../browse/browse-tab-conflict.js";
+import {
+  externallyAttachedTabIds,
+  isPrivilegedPageUrl,
+  mirrorablePageUrl,
+  parseCdpTargets,
+} from "../../../browse/browse-tab-conflict.js";
 
 /** The supervisor's own limits, so a native page browser answers like the in-container one. */
 const MAX_OUTPUT_BYTES = 512 * 1024;
@@ -140,10 +148,15 @@ const SPECIAL_KEYS: Record<string, KeyDefinition> = {
   Tab: { key: "Tab", code: "Tab", virtualKeyCode: 9 },
   Backspace: { key: "Backspace", code: "Backspace", virtualKeyCode: 8 },
   Escape: { key: "Escape", code: "Escape", virtualKeyCode: 27 },
+  Delete: { key: "Delete", code: "Delete", virtualKeyCode: 46 },
   ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 },
   ArrowUp: { key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38 },
   ArrowRight: { key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 },
   ArrowDown: { key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40 },
+  PageUp: { key: "PageUp", code: "PageUp", virtualKeyCode: 33 },
+  PageDown: { key: "PageDown", code: "PageDown", virtualKeyCode: 34 },
+  End: { key: "End", code: "End", virtualKeyCode: 35 },
+  Home: { key: "Home", code: "Home", virtualKeyCode: 36 },
 };
 
 /** Alt 1, Ctrl 2, Meta 4, Shift 8, as Input.dispatchKeyEvent expects. */
@@ -195,9 +208,13 @@ function codeForCharacter(character: string): string {
 /** One wall-clock retry for Chrome's transient "Unable to capture screenshot". */
 function isScreenshotUnavailable(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    error.message.toLowerCase().includes("unable to capture screenshot")
+    error instanceof Error && error.message.toLowerCase().includes("unable to capture screenshot")
   );
+}
+
+/** Chrome captures only the active page; a background tab has to be brought to the front first. */
+function isInactivePage(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("Not attached to an active page");
 }
 
 /**
@@ -238,7 +255,7 @@ export async function withBrowserLock<T>(lock: string, fn: () => Promise<T>): Pr
   mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    let handle;
+    let handle: FileHandle;
     try {
       handle = await open(lock, "wx", 0o600);
     } catch (error) {
@@ -320,7 +337,8 @@ export class NativeBrowser {
   }
 
   /** The open tabs, each with the bot that opened it when one was seen working there. */
-  async listTabs(): Promise<BrowserTabInfo[]> {    try {
+  async listTabs(): Promise<BrowserTabInfo[]> {
+    try {
       const response = await fetch(`http://127.0.0.1:${this.options.port}/json/list`, {
         signal: AbortSignal.timeout(2_000),
       });
@@ -381,9 +399,16 @@ export class NativeBrowser {
     try {
       result = await capture();
     } catch (error) {
-      // Chrome briefly refuses while it is committing a frame; one retry settles it.
-      if (!isScreenshotUnavailable(error)) throw error;
-      result = await capture();
+      if (isInactivePage(error)) {
+        // The panel's tab can be in the background (browse keeps its own tab in front). Bring it
+        // to the front once, then capture; this is also how a person sees the page it is showing.
+        await this.sendCdp(url, "Page.bringToFront", {}).catch(() => undefined);
+        result = await capture();
+      } else {
+        // Chrome briefly refuses while it is committing a frame; one retry settles it.
+        if (!isScreenshotUnavailable(error)) throw error;
+        result = await capture();
+      }
     }
     if (typeof result.data !== "string") return undefined;
     const image = Buffer.from(result.data, "base64");
@@ -529,7 +554,7 @@ export class NativeBrowser {
    */
   private async livePages(
     includeBlank = false,
-  ): Promise<Array<{ id: string; webSocketDebuggerUrl: string }>> {
+  ): Promise<Array<{ id: string; webSocketDebuggerUrl: string; url: string; title: string }>> {
     const response = await fetch(`http://127.0.0.1:${this.options.port}/json/list`, {
       signal: AbortSignal.timeout(2_000),
     });
@@ -541,14 +566,37 @@ export class NativeBrowser {
       webSocketDebuggerUrl?: unknown;
     }>;
     if (!Array.isArray(pages)) return [];
-    return pages.filter(
-      (page) =>
-        page.type === "page" &&
-        typeof page.id === "string" &&
-        typeof page.webSocketDebuggerUrl === "string" &&
-        // Chromium starts on a blank tab; it is not something a bot opened.
-        (includeBlank || !(page.url === "about:blank" && !page.title)),
-    ) as Array<{ id: string; webSocketDebuggerUrl: string }>;
+    return pages
+      .filter(
+        (page) =>
+          page.type === "page" &&
+          typeof page.id === "string" &&
+          typeof page.webSocketDebuggerUrl === "string" &&
+          // Chromium starts on a blank tab; it is not something a bot opened.
+          (includeBlank || !(page.url === "about:blank" && !page.title)),
+      )
+      .map((page) => ({
+        id: page.id as string,
+        webSocketDebuggerUrl: page.webSocketDebuggerUrl as string,
+        url: typeof page.url === "string" ? page.url : "",
+        title: typeof page.title === "string" ? page.title : "",
+      }));
+  }
+
+  /** Every target the browser knows, with the attach flag that identifies browse's tab. */
+  private async browserTargets(): Promise<LiveBrowserTarget[]> {
+    const browserUrl = await this.browserSocketUrl();
+    if (!browserUrl) return [];
+    try {
+      const result = await this.sendCdp<{ targetInfos?: unknown }>(
+        browserUrl,
+        "Target.getTargets",
+        {},
+      );
+      return parseCdpTargets(result.targetInfos);
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -584,13 +632,16 @@ export class NativeBrowser {
    * Opens a tab for a bot that has none yet and records it as that bot's. Without this the bot had
    * no page to attach to and the caller reported that the page browser was not attached to this
    * computer's Chrome. Only ever a new tab: another bot's tab is never borrowed.
+   *
+   * `mirrorUrl` is the browse tab's page: the panel's own tab opens that page so a person can see
+   * and operate it while browse keeps its tab. Same profile, so the site's sign-in carries over.
    */
-  private async createOwnedPage(botId: string): Promise<string | undefined> {
+  private async createOwnedPage(botId: string, mirrorUrl?: string): Promise<string | undefined> {
     try {
-      const response = await fetch(
-        `http://127.0.0.1:${this.options.port}/json/new?about:blank`,
-        { method: "PUT", signal: AbortSignal.timeout(2_000) },
-      );
+      const response = await fetch(`http://127.0.0.1:${this.options.port}/json/new?about:blank`, {
+        method: "PUT",
+        signal: AbortSignal.timeout(2_000),
+      });
       const page = (await response.json()) as { id?: unknown; webSocketDebuggerUrl?: unknown };
       if (typeof page.id !== "string" || typeof page.webSocketDebuggerUrl !== "string") {
         return undefined;
@@ -600,6 +651,13 @@ export class NativeBrowser {
       const owners = await this.readOwners();
       owners[page.id] = botId;
       await this.writeOwners(owners).catch(() => undefined);
+      // Ownership is recorded first: a page that fails to load is still this bot's tab, and the
+      // person can navigate it in the panel.
+      if (mirrorUrl) {
+        await this.sendCdp(page.webSocketDebuggerUrl, "Page.navigate", { url: mirrorUrl }).catch(
+          () => undefined,
+        );
+      }
       return page.webSocketDebuggerUrl;
     } catch {
       return undefined;
@@ -607,23 +665,30 @@ export class NativeBrowser {
   }
 
   private async pageSocketUrl(botId?: string): Promise<string | undefined> {
+    const targets = await this.browserTargets();
+    const attached = externallyAttachedTabIds(targets);
     if (!botId) {
       try {
-        return (await this.livePages()).at(-1)?.webSocketDebuggerUrl;
+        // A page another debugger holds is not a safe default: it may be browse's tab.
+        const pages = (await this.livePages()).filter(
+          (page) => !attached.has(page.id) && !isPrivilegedPageUrl(page.url),
+        );
+        return pages.at(-1)?.webSocketDebuggerUrl;
       } catch {
         return undefined;
       }
     }
     try {
-      const owned = await this.ownedPage(botId);
-      if (owned) return owned.webSocketDebuggerUrl;
-      // The bot may already own a tab that is still blank, which ownedPage hides. Reuse that tab
-      // instead of opening another one for the same bot.
+      const pages = await this.livePages(true);
       const rememberedId = await this.rememberedTabId(botId);
-      if (rememberedId) {
-        const live = (await this.livePages(true)).find((page) => page.id === rememberedId);
-        if (live) return live.webSocketDebuggerUrl;
-      }
+      const remembered = rememberedId ? pages.find((page) => page.id === rememberedId) : undefined;
+      // This bot's own tab, with no other debugger on it: safe to drive.
+      if (remembered && !attached.has(remembered.id)) return remembered.webSocketDebuggerUrl;
+      // browse holds the tab this bot last used. The page browser gets its own tab on that page
+      // instead of attaching to browse's tab, so chrome.debugger and CDP never share a target.
+      if (remembered) return await this.createOwnedPage(botId, mirrorablePageUrl(remembered.url));
+      // No tab of its own yet: open a blank one. Never adopt a page another debugger holds,
+      // because it may belong to another bot's browse session.
       return await this.createOwnedPage(botId);
     } catch {
       return undefined;
@@ -853,7 +918,9 @@ export class NativeBrowser {
         () =>
           finish(() => {
             killTree(child);
-            reject(new Error("Page browser timed out; the page may be busy or blocked by a dialog."));
+            reject(
+              new Error("Page browser timed out; the page may be busy or blocked by a dialog."),
+            );
           }),
         COMMAND_TIMEOUT_MS,
       );

@@ -99,6 +99,22 @@ Web, desktop, iPhone, iPad, and Android, all talking to the same server.
 </tr>
 </table>
 
+## Quick start from a checkout (no Docker)
+
+Node, pnpm, and the embedded Postgres state under `~/.local/share/rakazo-native` are all this
+needs. That state (`owner.pw`, `app.pw` and the `pgdata` cluster) is prepared once on the
+machine; the checkout does not create it.
+
+```bash
+node scripts/native/setup-env.mjs
+bash scripts/native/start.sh
+```
+
+`setup-env.mjs` writes `.env` with random secrets and the `http://localhost:5173` origin, keeping
+existing values when rerun. `start.sh` starts Postgres on 5433 and the API, worker and web on
+their fixed ports. Open [http://localhost:5173](http://localhost:5173); the passkey prompt needs
+that `localhost` address, not `127.0.0.1`.
+
 ## Quick start (published images)
 
 You need Docker Engine, the Compose plugin, curl, and OpenSSL. No clone or Node install. On Linux,
@@ -266,22 +282,22 @@ pnpm --filter @rakazo/desktop dev
 ```
 
 On first run the desktop app asks whether to run Rakazo on this computer or connect to an existing
-server. **This computer** can run without Docker on Apple silicon Macs with macOS 26 or later
-when the build includes a server bundle. Fresh setups use this path: the app downloads the server
-and computer runtime as needed. Existing Docker setups are offered a move while Docker is running;
-choosing **Keep Docker** leaves them on Docker.
+server. **This computer** needs no Docker and no VM on Linux: the app runs, or adopts, the
+checkout's own `scripts/native/start.sh`, which serves the API, worker and web at
+`http://localhost:5173`. A packaged app needs `RAKAZO_NATIVE_ROOT` pointing at a checkout, or a
+stack already running there. Apple silicon Macs with macOS 26 or later keep their path when the
+build includes a server bundle: the app downloads the server and computer runtime as needed.
 
-Other builds and platforms use Docker Compose to install and start the published images (the same
-files as `infra/compose/install-images.sh`) under the app's data directory. This path needs Docker
-Desktop, OrbStack, or Docker Engine. Without one, setup offers the Docker Desktop download, opens
-an installed Docker app that is not running, and continues on its own once Docker answers. Installed
-builds pin the image tag to their own version; unpackaged builds pull `edge`. Developers running
-`pnpm dev` should pick **Existing instance** with `http://127.0.0.1:5173` instead. Public servers
-must use HTTPS; HTTP is accepted only for loopback and private LAN addresses (not link-local). The
-app verifies Rakazo's health endpoint before saving, and later launches go straight to that
-instance. The Docker stack keeps running after the app quits; the Docker-free server stops with the app.
-**Quit and Stop Bots** in the application menu stops the managed stack and quits; switching to
-another server also stops it.
+Other platforms and builds use Docker Compose to install and start the published images (the same
+files as `infra/compose/install-images.sh`) under the app's data directory. That path needs Docker
+Desktop, OrbStack, or Docker Engine, and installed builds pin the image tag to their own version
+while unpackaged builds pull `edge`. Developers running `pnpm dev` should pick **Existing
+instance** with `http://localhost:5173` instead. Public servers must use HTTPS; HTTP is accepted
+only for loopback and private LAN addresses (not link-local). The app verifies Rakazo's health
+endpoint before saving, and later launches go straight to that instance. A stack the app started
+stops with the app; one it adopted from a checkout someone else started keeps running. **Quit and
+Stop Bots** in the application menu stops the managed stack and quits; switching to another server
+also stops it.
 
 On Linux the desktop app ships as an AppImage, which needs FUSE 2 (`libfuse.so.2`). Distributions
 that only include FUSE 3, such as Fedora Silverblue or Ubuntu 24.04, show

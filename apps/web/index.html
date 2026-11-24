@@ -14,10 +14,35 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
     <title>Rakazo</title>
+    <!-- The page paints before the stylesheet loads, so keep it on the app's own background. -->
+    <style>
+      html,
+      body {
+        background: #0a0a0a;
+      }
+      html[data-theme="light"],
+      html[data-theme="light"] body {
+        background: #fff;
+      }
+    </style>
     <script src="/theme.js"></script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        aria-hidden="true"
+        style="display: grid; min-height: 100vh; place-items: center; color: #737373"
+      >
+        <span
+          style="width: 10px; height: 10px; border-radius: 9999px; background: currentColor"
+        ></span>
+      </div>
+    </div>
+    <noscript>
+      <p style="margin: 4rem auto; max-width: 32rem; text-align: center; color: #737373">
+        Rakazo needs JavaScript turned on.
+      </p>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

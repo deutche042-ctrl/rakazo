@@ -1,4 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import { useTimeout } from "@rakazo/chat-ui/hooks";
 import { BOT_COLOR_LIST, signInProviders } from "@rakazo/contracts";
 import {
   credentialIssue,
@@ -26,6 +27,7 @@ import { authClient } from "../../lib/auth/auth";
 import type { AuthCapabilities } from "../../lib/auth/auth-capabilities";
 import { fetchAuthCapabilities } from "../../lib/auth/auth-capabilities";
 import { newAccountDestination, signInNext } from "../../lib/auth/sign-in-next";
+import { passkeyHostHint } from "../../lib/auth/passkeys";
 import { runSsoFlow } from "../../lib/auth/sso-flow";
 import { desktopBridge } from "../../lib/platform/desktop";
 import { clearSpaceSelection } from "../../lib/query/rpc";
@@ -60,6 +62,19 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   });
   const [pending, setPending] = useState(false);
   const entering = useRef(false);
+  // Bumped on every entry so the wait for the shell starts again, and never outlives the page.
+  const [enteringAttempt, setEnteringAttempt] = useState(0);
+  // A signed-in page that never opens would leave the form disabled; give up after ten seconds.
+  useTimeout(
+    () => {
+      if (!entering.current) return;
+      entering.current = false;
+      setPending(false);
+      setError(t`Signed in, but Rakazo did not open. Try again.`);
+    },
+    enteringAttempt === 0 ? null : 10_000,
+    enteringAttempt,
+  );
   const passkey = usePasskeySignIn({ onSignedIn: enterApp, onError: setError });
   const [resetSent, setResetSent] = useState(false);
   // Signup triggers a session refresh that remounts the anonymous auth page.
@@ -75,6 +90,10 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const codeMode = useCode && !password;
   const codeStep = useCode && codeSent;
   const providers = reset ? signInProviders(reset) : [];
+  // A server that loaded but offers no way in would otherwise be a card with no controls.
+  const noSignInMethod = Boolean(reset && !reset.passwordAuth && providers.length === 0);
+  // A server that asks for `localhost` but is opened by IP cannot offer passkeys here.
+  const passkeyHint = reset ? passkeyHostHint(reset.passkeyRpId) : null;
   const chooser = Boolean(
     reset?.passwordAuth && providers.length > 0 && !emailStep && mode !== "forgot" && !codeStep,
   );
@@ -225,6 +244,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     // first beats it, so the guards bounce through sign-in and the shell.
     entering.current = true;
     setPending(true);
+    setEnteringAttempt((attempt) => attempt + 1);
   }
 
   async function signInAsDemo(account: { email: string; password: string }) {
@@ -273,7 +293,20 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   }
 
   if (!sent && !reset && !capabilityError) {
-    return <div className="h-full bg-background" />;
+    return (
+      <div
+        role="status"
+        aria-busy="true"
+        data-rakazo-auth-loading=""
+        className="grid h-full place-items-center gap-3 bg-background"
+      >
+        <LogoAvatar size={48} motion={false} />
+        {/* Visible, so a slow server is never a blank page or a spinner with no explanation. */}
+        <p className="text-body text-muted-foreground">
+          <Trans>Loading sign-in…</Trans>
+        </p>
+      </div>
+    );
   }
   if (!sent && mode === "up" && reset?.registrationOpen === false) {
     return <Navigate to={`/sign-in${nextQuery}`} replace />;
@@ -313,12 +346,34 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         <>
           {capabilityError ? (
             <div role="alert" className="w-full text-center">
-              <p>
-                <Trans>Could not load sign-in options</Trans>
+              <p className="text-body">
+                <Trans>Could not reach the server</Trans>
+              </p>
+              <p className="mt-1 text-body-sm text-muted-foreground">
+                <Trans>Check that Rakazo is running, then try again.</Trans>
               </p>
               <Button
                 type="button"
                 variant="outline"
+                className="mt-4"
+                onClick={() => setCapabilityAttempt((attempt) => attempt + 1)}
+              >
+                <Trans>Retry</Trans>
+              </Button>
+            </div>
+          ) : null}
+          {!capabilityError && noSignInMethod && mode !== "forgot" ? (
+            <div role="alert" className="w-full text-center">
+              <p className="text-body">
+                <Trans>This server has no sign-in method available.</Trans>
+              </p>
+              <p className="mt-1 text-body-sm text-muted-foreground">
+                <Trans>Check the server setup, then try again.</Trans>
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-4"
                 onClick={() => setCapabilityAttempt((attempt) => attempt + 1)}
               >
                 <Trans>Retry</Trans>
@@ -521,6 +576,9 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
                   onSignedIn={enterApp}
                   onError={setError}
                 />
+              ) : null}
+              {mode === "in" && !codeStep && passkeyHint ? (
+                <p className="mt-2 text-center text-body text-muted-foreground">{passkeyHint}</p>
               ) : null}
               {reset?.demoAccount && mode !== "forgot" && !codeStep ? (
                 <Button

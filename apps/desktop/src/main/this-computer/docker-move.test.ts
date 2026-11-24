@@ -29,6 +29,7 @@ describe("chooseStack", () => {
     dockerStack: false,
     dockerInstalled: true,
     nativeStack: false,
+    hostStack: false,
     choice: null,
   };
 
@@ -36,6 +37,12 @@ describe("chooseStack", () => {
     expect(chooseStack({ ...base, eligible: false })).toBe("docker");
     expect(chooseStack({ ...base, eligible: false, nativeStack: true, choice: "native" })).toBe(
       "docker",
+    );
+  });
+
+  it("runs the checkout's stack on Linux, whatever Docker state the machine is in", () => {
+    expect(chooseStack({ ...base, hostStack: true, eligible: false, dockerStack: true })).toBe(
+      "native",
     );
   });
 

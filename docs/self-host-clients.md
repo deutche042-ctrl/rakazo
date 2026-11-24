@@ -60,6 +60,34 @@ writes a certificate and key for that name. If browsers or the desktop app also 
 address for the same install, list it in
 [`RAKAZO_EXTRA_AUTH_ORIGINS`](./self-host-configuration.md#reaching-rakazo-from-a-second-address).
 
+## Native checkout (scripts/native)
+
+The scripts in `scripts/native` run Rakazo on the machine itself, without Docker. To reach that
+stack from a phone outside the house, publish a temporary HTTPS link through a Cloudflare quick
+tunnel:
+
+1. Start the stack, then in another terminal run `bash scripts/native/tunnel.sh`. The first run
+   needs `cloudflared`; if it is missing, the script prints the install command and exits.
+2. The script prints `https://<words>.trycloudflare.com`. The address changes on every start.
+3. On the phone, tap **Use a custom server** and enter that link with no port or path.
+
+The tunnel keeps its state in `~/.local/share/rakazo-native` (`status.json`, `live-link.json`,
+`tunnel.log`, mode 600). On the web app, **Settings > Live link** shows it as a lamp: green
+**Running**, orange **Problem**, red **Stopped** or **Off**, with a copy button, one **Stop** and
+the last 100 log lines. On the phone, the **Server** screen shows the same lamp and link with
+**Copy link** and **Share link**; it polls only while that screen is visible, and it does not stop
+the tunnel or show the log, which can name addresses from the machine.
+
+Anyone with the link can open this server while the tunnel runs, so treat it as a secret. The
+development mailbox stays on the machine: `/api/dev/emails` answers loopback requests only, so
+another device signs in with the account password rather than reading a verification link from
+the mailbox. An account without a password must set one on the machine first.
+
+`bash scripts/native/stop.sh` stops the tunnel with the rest of the native stack. If the tunnel
+manager was killed and left `cloudflared` behind, it terminates the recorded process after
+checking its command line, so no public URL keeps pointing at the machine;
+`bash scripts/native/status.sh` prints the current state as JSON.
+
 ## Desktop "This computer" servers
 
 The server the desktop app runs under **This computer** is for that computer only. It listens on

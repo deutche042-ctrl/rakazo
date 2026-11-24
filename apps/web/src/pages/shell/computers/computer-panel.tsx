@@ -1,11 +1,14 @@
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { useTimeout } from "@rakazo/chat-ui/hooks";
 import type { Bot, ComputerReleaseReason, ComputerStatus } from "@rakazo/contracts";
 import { computerPreviewPlaceholder } from "@rakazo/i18n/computer-preview";
 import { BotAvatar, Button } from "@rakazo/ui-web";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe, HardDrive, Maximize2, X } from "lucide-react";
 import type {
+  CompositionEvent as ReactCompositionEvent,
+  FormEvent as ReactFormEvent,
   KeyboardEvent as ReactKeyboardEvent,
   ReactNode,
   PointerEvent as ReactPointerEvent,
@@ -40,7 +43,6 @@ type ComputerPanelProps = {
   hasControl?: boolean;
   /** Ask for the shared browser's control without opening the full window. */
   onTakeControl?: () => void;
-  /** Hand that control back. */
   onRelease?: (reason?: ComputerReleaseReason) => Promise<void>;
   cleaningUpDisk?: boolean;
   onCleanUpDisk?: () => void;
@@ -99,45 +101,43 @@ const LIVE_MULTI_CLICK_SLOP_PX = 4;
 /** A hundred pixels of wheel is one notch; a long flick is worth several. */
 const LIVE_SCROLL_PX_PER_NOTCH = 100;
 const LIVE_SCROLL_MAX_AMOUNT = 20;
+/** A finger has to travel this far before it means a scroll rather than a tap. */
+const LIVE_TOUCH_SLOP_PX = 8;
+/** Holding a finger still this long starts a drag, so a press can select text on the page. */
+const LIVE_TOUCH_LONG_PRESS_MS = 450;
+/** A phone's screen is small, so its finger travel maps to shorter notches than a wheel's. */
+const LIVE_TOUCH_SCROLL_PX_PER_NOTCH = 30;
 
-type LiveInputKind = "pointer" | "key" | "scroll";
+type LiveInputKind = "pointer" | "key" | "scroll" | "clipboard";
 type LiveButton = "left" | "right";
 
+/** One finger on the surface, from the press until it lifts or is cancelled. */
+type TouchGesture = {
+  id: number;
+  /** The first and last page points, in the page's own pixels. */
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  /** The same start in CSS pixels, where the slop threshold is measured. */
+  startClientX: number;
+  startClientY: number;
+  mode: "pending" | "scroll" | "drag";
+};
+
 /** Keys a page takes as a press; a printable character is sent as itself. */
-const LIVE_KEYS = new Set([
-  "Enter",
-  "Tab",
-  "Backspace",
-  "Delete",
-  "Escape",
-  " ",
-  "ArrowLeft",
-  "ArrowRight",
-  "ArrowUp",
-  "ArrowDown",
-  "PageDown",
-  "PageUp",
-  "Home",
-  "End",
-]);
+const LIVE_KEYS = new Set(
+  "Enter|Tab|Backspace|Delete|Escape| |ArrowLeft|ArrowRight|ArrowUp|ArrowDown|PageDown|PageUp|Home|End".split(
+    "|",
+  ),
+);
 
 /** A modifier on its own presses nothing; it travels with the key it is held for. */
-const LIVE_MODIFIER_KEYS = new Set([
-  "Alt",
-  "AltGraph",
-  "CapsLock",
-  "Control",
-  "Fn",
-  "FnLock",
-  "Hyper",
-  "Meta",
-  "NumLock",
-  "ScrollLock",
-  "Shift",
-  "Super",
-  "Symbol",
-  "SymbolLock",
-]);
+const LIVE_MODIFIER_KEYS = new Set(
+  "Alt AltGraph CapsLock Control Fn FnLock Hyper Meta NumLock ScrollLock Shift Super Symbol SymbolLock".split(
+    " ",
+  ),
+);
 
 function liveModifiers(event: {
   altKey: boolean;
@@ -257,13 +257,35 @@ function LiveSurface({
     count: number;
   } | null>(null);
   const heldKeysRef = useRef(new Set<string>());
-
+  // Typing goes through an input so a phone's keyboard has something to talk to; it sits behind
+  // the picture and never takes a pointer of its own.
+  const textInputRef = useRef<HTMLInputElement>(null);
+  const composingRef = useRef(false);
+  const touchRef = useRef<TouchGesture | null>(null);
+  const touchScrollRef = useRef({ x: 0, y: 0 });
+  // A tap asks for the keyboard once the finger is up; iOS only accepts that inside the touch.
+  const tapFocusRef = useRef(false);
+  const barKeys = [
+    { key: "Escape", label: "Esc", name: t`Escape` },
+    { key: "Tab", label: "Tab", name: t`Tab` },
+    { key: "ArrowLeft", label: "←", name: t`Left` },
+    { key: "ArrowDown", label: "↓", name: t`Down` },
+    { key: "ArrowUp", label: "↑", name: t`Up` },
+    { key: "ArrowRight", label: "→", name: t`Right` },
+    { key: "Backspace", label: "⌫", name: t`Backspace` },
+    { key: "Enter", label: "⏎", name: t`Enter` },
+  ];
+  const pressBarKey = (key: string) => send("key", { key, modifiers: [] });
+  // The long press is a state change so useTimeout can start and cancel it with the render.
+  const [pendingTouch, setPendingTouch] = useState<{ id: number } | null>(null);
   useEffect(
     () => () => {
       if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
     },
     [],
   );
+  // A finger that stays put becomes a drag; one that moves first is a scroll instead.
+  useTimeout(beginTouchDrag, pendingTouch ? LIVE_TOUCH_LONG_PRESS_MS : null, pendingTouch);
 
   function send(kind: LiveInputKind, payload: Record<string, unknown>) {
     if (!interactive || !inputRef.current) return;
@@ -298,10 +320,8 @@ function LiveSurface({
   }
 
   function flushMove() {
-    if (moveTimerRef.current) {
-      clearTimeout(moveTimerRef.current);
-      moveTimerRef.current = null;
-    }
+    if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
+    moveTimerRef.current = null;
     const move = moveRef.current;
     if (!move) return;
     moveRef.current = null;
@@ -337,8 +357,83 @@ function LiveSurface({
     return count;
   }
 
+  function focusTextInput() {
+    textInputRef.current?.focus({ preventScroll: true });
+  }
+
+  function dropPointerCapture(pointerId: number) {
+    const surface = surfaceRef.current;
+    if (surface?.hasPointerCapture(pointerId)) surface.releasePointerCapture(pointerId);
+  }
+
+  /** A long press without travel means the finger wants a drag, so the page gets a held press. */
+  function beginTouchDrag() {
+    const touch = touchRef.current;
+    if (touch?.mode !== "pending") return;
+    touch.mode = "drag";
+    setPendingTouch(null);
+    clickRef.current = {
+      at: performance.now(),
+      x: touch.startX,
+      y: touch.startY,
+      button: "left",
+      count: 1,
+    };
+    pressedRef.current = { id: touch.id, button: "left" };
+    send("pointer", {
+      x: touch.startX,
+      y: touch.startY,
+      type: "down",
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+  }
+
+  /** A finger travelling over the page turns into wheel notches once it has gone far enough. */
+  function flushTouchScroll(point: { x: number; y: number }) {
+    const accum = touchScrollRef.current;
+    for (const axis of ["x", "y"] as const) {
+      const step = Math.trunc(accum[axis] / LIVE_TOUCH_SCROLL_PX_PER_NOTCH);
+      if (!step) continue;
+      // What was not sent stays in the accumulator, so a slow, long drag is not lost.
+      const sent = Math.sign(step) * Math.min(Math.abs(step), LIVE_SCROLL_MAX_AMOUNT);
+      accum[axis] -= sent * LIVE_TOUCH_SCROLL_PX_PER_NOTCH;
+      // A finger moving one way scrolls the page the other, like a wheel.
+      send("scroll", {
+        direction: axis === "x" ? (step < 0 ? "right" : "left") : step < 0 ? "down" : "up",
+        amount: Math.abs(sent),
+        x: point.x,
+        y: point.y,
+      });
+    }
+  }
+
   function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (!interactive) return;
+    if (event.pointerType === "touch") {
+      // A second finger while the first is still down is not a gesture of its own.
+      if (touchRef.current || pressedRef.current) return;
+      const point = pagePoint(event.clientX, event.clientY);
+      if (!point?.inside) return;
+      event.preventDefault();
+      // The surface keeps the finger, so a drag or scroll that leaves the frame still belongs here.
+      event.currentTarget.setPointerCapture(event.pointerId);
+      touchScrollRef.current = { x: 0, y: 0 };
+      touchRef.current = {
+        id: event.pointerId,
+        startX: point.x,
+        startY: point.y,
+        lastX: point.x,
+        lastY: point.y,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        mode: "pending",
+      };
+      tapFocusRef.current = false;
+      setPendingTouch({ id: event.pointerId });
+      return;
+    }
     const button: LiveButton | null =
       event.button === 0 ? "left" : event.button === 2 ? "right" : null;
     if (!button || pressedRef.current) return;
@@ -348,7 +443,7 @@ function LiveSurface({
     // The surface keeps the pointer, so a drag that leaves the frame still belongs to the page.
     event.currentTarget.setPointerCapture(event.pointerId);
     // The keys that follow a click belong to the page as well.
-    event.currentTarget.focus({ preventScroll: true });
+    focusTextInput();
     pressedRef.current = { id: event.pointerId, button };
     send("pointer", {
       x: point.x,
@@ -361,6 +456,31 @@ function LiveSurface({
   }
 
   function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const touch = touchRef.current;
+    if (touch && touch.id === event.pointerId) {
+      if (touch.mode === "pending") {
+        const moved = Math.hypot(
+          event.clientX - touch.startClientX,
+          event.clientY - touch.startClientY,
+        );
+        if (moved <= LIVE_TOUCH_SLOP_PX) return;
+        // A finger that travels first is scrolling, not tapping or dragging.
+        touch.mode = "scroll";
+        setPendingTouch(null);
+      }
+      if (touch.mode === "scroll") {
+        event.preventDefault();
+        const point = pagePoint(event.clientX, event.clientY);
+        if (!point) return;
+        touchScrollRef.current.x += point.x - touch.lastX;
+        touchScrollRef.current.y += point.y - touch.lastY;
+        touch.lastX = point.x;
+        touch.lastY = point.y;
+        flushTouchScroll(point);
+        return;
+      }
+      // A drag is already a held press on the page, so the pressed path below sends its moves.
+    }
     const pressed = pressedRef.current;
     if (!pressed || pressed.id !== event.pointerId) return;
     // Releasing the pressed button while another stays held fires pointermove, not pointerup.
@@ -378,10 +498,8 @@ function LiveSurface({
     const pressed = pressedRef.current;
     if (!pressed) return;
     pressedRef.current = null;
-    if (moveTimerRef.current) {
-      clearTimeout(moveTimerRef.current);
-      moveTimerRef.current = null;
-    }
+    if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
+    moveTimerRef.current = null;
     // The release has to land where the pointer is, so the last move goes first.
     const move = moveRef.current;
     moveRef.current = null;
@@ -408,6 +526,63 @@ function LiveSurface({
   }
 
   function onPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const touch = touchRef.current;
+    if (touch && touch.id === event.pointerId) {
+      if (touch.mode === "drag") {
+        // The held press on the page is released like any other drag.
+        release(event);
+      } else {
+        event.preventDefault();
+        setPendingTouch(null);
+        if (touch.mode === "pending") {
+          // Nothing moved: a tap is a press and release at the same point, with its click count.
+          const point = pagePoint(event.clientX, event.clientY);
+          if (point) {
+            const clickCount = countClick(point, "left", event.timeStamp);
+            send("pointer", {
+              x: point.x,
+              y: point.y,
+              type: "down",
+              button: "left",
+              buttons: 1,
+              clickCount,
+            });
+            send("pointer", {
+              x: point.x,
+              y: point.y,
+              type: "up",
+              button: "left",
+              buttons: 0,
+              clickCount,
+            });
+          }
+          tapFocusRef.current = true;
+          focusTextInput();
+        }
+        dropPointerCapture(event.pointerId);
+        touchScrollRef.current = { x: 0, y: 0 };
+      }
+      touchRef.current = null;
+      return;
+    }
+    if (pressedRef.current?.id === event.pointerId) release(event);
+  }
+
+  function onPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    const touch = touchRef.current;
+    if (touch && touch.id === event.pointerId) {
+      if (touch.mode === "drag") {
+        release(event);
+      } else {
+        // A cancelled tap or scroll leaves nothing held on the page.
+        setPendingTouch(null);
+        dropPointerCapture(event.pointerId);
+        touchScrollRef.current = { x: 0, y: 0 };
+        tapFocusRef.current = false;
+      }
+      touchRef.current = null;
+      return;
+    }
     if (pressedRef.current?.id === event.pointerId) release(event);
   }
 
@@ -418,8 +593,7 @@ function LiveSurface({
     if (LIVE_MODIFIER_KEYS.has(key) || (!LIVE_KEYS.has(key) && key.length !== 1)) return;
     // These would move focus, scroll this page or submit something here instead of the page.
     event.preventDefault();
-    // Held keys repeat; the page gets one press for the press, not one per repeat.
-    if (event.repeat) return;
+    // A held key repeats on the page too, so a held Backspace or arrow keeps going.
     heldKeysRef.current.add(key);
     send("key", { key, modifiers: liveModifiers(event) });
   }
@@ -433,6 +607,72 @@ function LiveSurface({
     if (isEditableTarget(event.target) || LIVE_MODIFIER_KEYS.has(key) || key.length !== 1) return;
     send("key", { key, modifiers: liveModifiers(event) });
   }
+
+  /**
+   * The hidden text field is where a phone's keyboard writes. A printable key goes out as a key,
+   * which the server turns into typed text; a paste or an input method goes out as clipboard text.
+   */
+  function onTextKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (!interactive || event.nativeEvent.isComposing) return;
+    // A modifier chord belongs to this browser (copy, paste, switch tab), not to the page.
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const key = event.key;
+    if (LIVE_MODIFIER_KEYS.has(key) || (!LIVE_KEYS.has(key) && key.length !== 1)) return;
+    event.preventDefault();
+    send("key", { key, modifiers: liveModifiers(event) });
+  }
+
+  function onTextInput(event: ReactFormEvent<HTMLInputElement>) {
+    if (!interactive || composingRef.current) return;
+    const input = event.currentTarget;
+    const text = input.value;
+    if (!text) return;
+    // A phone keyboard may type without a key this surface knows; its value is the text to send.
+    input.value = "";
+    send("clipboard", { text });
+  }
+
+  function onTextCompositionStart() {
+    composingRef.current = true;
+  }
+
+  function onTextCompositionEnd(event: ReactCompositionEvent<HTMLInputElement>) {
+    composingRef.current = false;
+    const text = event.data ?? event.currentTarget.value;
+    event.currentTarget.value = "";
+    if (text) send("clipboard", { text });
+  }
+
+  /** A tap asks for the keyboard again inside the touch event, where iOS still allows it. */
+  function onSurfaceTouchEnd() {
+    if (!tapFocusRef.current) return;
+    tapFocusRef.current = false;
+    focusTextInput();
+  }
+
+  useEffect(() => {
+    const input = textInputRef.current;
+    if (!input) return;
+    if (!interactive) {
+      // Without control nothing here may keep a keyboard open or a gesture half-done.
+      input.blur();
+      setPendingTouch(null);
+      touchRef.current = null;
+      touchScrollRef.current = { x: 0, y: 0 };
+      tapFocusRef.current = false;
+      pressedRef.current = null;
+      moveRef.current = null;
+      if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
+      moveTimerRef.current = null;
+      return;
+    }
+    // A mouse or trackpad has a keyboard already; a touch screen waits for a tap on the page.
+    if (typeof window.matchMedia !== "function" || window.matchMedia("(pointer: coarse)").matches)
+      return;
+    // Taking control leaves focus where the person put it; only an empty page gives it away.
+    if (!document.activeElement || document.activeElement === document.body)
+      input.focus({ preventScroll: true });
+  }, [interactive]);
 
   // React listens for the wheel passively, so the page would scroll before this frame claimed it.
   useEffect(() => {
@@ -464,13 +704,14 @@ function LiveSurface({
       // The frame is a remote screen that takes the keys itself rather than a static picture.
       role="application"
       tabIndex={interactive ? 0 : -1}
-      className={`relative h-full touch-none overflow-hidden bg-black outline-none select-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${
-        interactive ? "cursor-crosshair" : ""
+      className={`relative h-full touch-none overflow-hidden overscroll-none bg-black outline-none select-none [-webkit-tap-highlight-color:transparent] [-webkit-touch-callout:none] [-webkit-user-drag:none] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${
+        interactive ? "cursor-default" : ""
       }`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onTouchEnd={onSurfaceTouchEnd}
       onContextMenu={(event) => {
         if (interactive) event.preventDefault();
       }}
@@ -482,11 +723,47 @@ function LiveSurface({
         src={image}
         alt={t`Bot browser`}
         draggable={false}
-        className="h-full w-full touch-none object-contain select-none"
+        onDragStart={(event) => event.preventDefault()}
+        className="h-full w-full touch-none object-contain select-none overscroll-none [-webkit-tap-highlight-color:transparent] [-webkit-touch-callout:none] [-webkit-user-drag:none]"
+      />
+      <input
+        ref={textInputRef}
+        type="text"
+        tabIndex={-1}
+        inputMode="text"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        aria-label={t`Type into the bot's browser`}
+        className="pointer-events-none absolute start-0 top-0 h-px w-px opacity-0 text-base"
+        onKeyDown={onTextKeyDown}
+        onInput={onTextInput}
+        onCompositionStart={onTextCompositionStart}
+        onCompositionEnd={onTextCompositionEnd}
       />
       <span className="pointer-events-none absolute start-2 top-2 rounded-full bg-black/60 px-2 py-0.5 text-caption text-white">
         <Trans>Live</Trans>
       </span>
+      {interactive ? (
+        <div
+          role="toolbar"
+          className="pointer-events-auto absolute inset-x-0 bottom-0 hidden items-center gap-0.5 border-t border-white/10 bg-black/70 px-1 py-1 backdrop-blur pointer-coarse:flex [&>button]:h-8 [&>button]:flex-1 [&>button]:rounded [&>button]:bg-white/10 [&>button]:text-caption [&>button]:text-white [&>button]:active:bg-white/25"
+          onPointerDown={(event) => {
+            // The strip must not take the keyboard away from the page's own field.
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+          onKeyUp={(event) => event.stopPropagation()}
+        >
+          {barKeys.map(({ key, label, name }) => (
+            <button key={key} type="button" aria-label={name} onClick={() => pressBarKey(key)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

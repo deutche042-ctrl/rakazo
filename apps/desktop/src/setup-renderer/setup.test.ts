@@ -83,7 +83,12 @@ interface Harness {
   resolveSave: (result: DesktopSetupResult) => void;
 }
 
-function mount(saved: DesktopSetup | null, locale = ENGLISH, platform = "linux"): Harness {
+function mount(
+  saved: DesktopSetup | null,
+  locale = ENGLISH,
+  platform = "linux",
+  failInit = false,
+): Harness {
   document.body.innerHTML = setupBody ?? "";
   const checkCalls: Array<Deferred<DesktopReachability>> = [];
   const startResult = deferred<DesktopLocalStackState>();
@@ -139,7 +144,8 @@ function mount(saved: DesktopSetup | null, locale = ENGLISH, platform = "linux")
   new Function(setupScript)();
 
   const initState = stateCalls.shift();
-  initState?.resolve({ defaultLocalUrl: DEFAULT_LOCAL_URL, cloudUrl: CLOUD_URL, saved });
+  if (failInit) initState?.reject(new Error("Setup did not answer."));
+  else initState?.resolve({ defaultLocalUrl: DEFAULT_LOCAL_URL, cloudUrl: CLOUD_URL, saved });
   return {
     nextCheck: () => {
       const call = checkCalls.shift();
@@ -183,6 +189,28 @@ describe("setup", () => {
     vi.useRealTimers();
     document.body.innerHTML = "";
     delete (window as { rakazoSetup?: RakazoSetup }).rakazoSetup;
+  });
+
+  it("offers a retry instead of staying locked when setup cannot read its state", async () => {
+    const ui = mount(null, ENGLISH, "linux", true);
+    await flush();
+
+    expect(element("status").textContent).toBe("Setup could not start. Quit Rakazo and try again.");
+    expect(element<HTMLButtonElement>("continue").textContent).toBe("Retry");
+    expect(element<HTMLButtonElement>("continue").disabled).toBe(false);
+    expect(element<HTMLButtonElement>("check").disabled).toBe(false);
+
+    // The retry reads setup state again and lands on an idle stack.
+    submitForm();
+    await flush();
+    ui.resolveAppState(null);
+    await flush();
+    ui.resolveStackState(stackState("idle"));
+    await flush();
+
+    expect(element("status").textContent).toBe("");
+    expect(element<HTMLButtonElement>("continue").textContent).toBe("Continue");
+    expect(element<HTMLButtonElement>("continue").disabled).toBe(false);
   });
 
   it.each([
@@ -469,13 +497,13 @@ describe("setup", () => {
     expect(element("continue").hidden).toBe(true);
   });
 
-  it("offers the Docker Desktop download as a next step, not an error", async () => {
+  it("offers Retry, not a download, when This computer's stack needs a person", async () => {
     const ui = await boot(null, ENGLISH, "darwin");
     selectMode("new");
     submitForm();
     const missing = {
       ...stackState("docker-missing"),
-      message: "Rakazo needs Docker Desktop to run on this computer.",
+      message: "Rakazo is not running on this computer.",
     };
     ui.startResult.resolve(missing);
     await flush();
@@ -484,14 +512,14 @@ describe("setup", () => {
 
     expect(element("stack-phase").textContent).toBe(missing.message);
     expect(element("stack-phase").hasAttribute("data-tone")).toBe(false);
-    expect(element("stack-hint").hidden).toBe(false);
-    expect(element("continue").textContent).toBe("Download Docker Desktop");
+    expect(element("stack-hint").hidden).toBe(true);
+    expect(element("continue").textContent).toBe("Retry");
     expect(element<HTMLButtonElement>("continue").disabled).toBe(false);
 
     submitForm();
     await flush();
-    expect(ui.links).toEqual(["docker-download"]);
-    expect(ui.starts()).toBe(1);
+    expect(ui.links).toEqual([]);
+    expect(ui.starts()).toBe(2);
   });
 
   it("keeps looking for Docker in the background and moves on once it answers", async () => {

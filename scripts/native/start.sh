@@ -26,5 +26,5 @@ if grep -qE '^RAKAZO_NATIVE_BROWSER=1$' "$ROOT/.env" 2>/dev/null; then
 fi
 
 cd "$ROOT"
-echo "[native] starting Rakazo (open http://127.0.0.1:5173)"
+echo "[native] starting Rakazo (open http://localhost:5173)"
 exec env TMPDIR="$RAM_ROOT/tmp" NODE_OPTIONS="--max-old-space-size=1536" pnpm dev

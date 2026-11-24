@@ -156,6 +156,7 @@ import { startMessagingRuntime } from "./messaging/messaging-runtime.js";
 import { settleWithTimeout } from "./messaging/team-chat-startup.js";
 import { recordSignInEnded } from "./models/model-connect-analytics.js";
 import { createRouter, routerEnv } from "./router.js";
+import { mountNativeRuntime } from "./routes/native-runtime.js";
 import { handleHttpError } from "./rpc-errors.js";
 import type { SpaceDeletionDeps } from "./spaces/space-deletion.js";
 import { afterSpaceDeparture } from "./spaces/space-departure.js";
@@ -775,12 +776,20 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   if (localEmailEmulator && env.nodeEnv === "development") {
     app.get(
       "/api/dev/emails",
-      () =>
-        new Response(JSON.stringify(localEmailEmulator.sent), {
+      (c) => {
+        // The emulator holds real mail. The live link publishes this server, so only the machine
+        // itself keeps the read: a proxied caller resolves to its own address, never loopback.
+        const ip = requestClientIp(c);
+        if (!ip || !isLocalhostOrLoopbackIp(ip)) return c.notFound();
+        return new Response(JSON.stringify(localEmailEmulator.sent), {
           headers: { "cache-control": "no-store", "content-type": "application/json" },
-        }),
+        });
+      },
     );
   }
+  // The native live link (scripts/native/tunnel.sh): status, uptime, the last log lines and one
+  // way to stop it. Both routes need a session; the log is never readable without one.
+  mountNativeRuntime(app, { session: readSession, env: process.env });
   app.route(
     "/",
     monitoringRoutes(

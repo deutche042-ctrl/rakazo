@@ -355,6 +355,21 @@ it("sends a drag as a move that keeps the button held", async () => {
   expect(up.payload.type).toBe("up");
 });
 
+it("captures the pointer for a drag and never starts a picture drag", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+
+  await fire(img, pointer("pointerdown", { clientX: 500, clientY: 300, button: 0, buttons: 1 }));
+  // The surface keeps the pointer, so a drag that leaves the frame still reaches the page.
+  expect(surface.setPointerCapture).toHaveBeenCalledWith(7);
+
+  // The picture is never the thing being dragged; the page's own selection is what moves.
+  const dragStart = new Event("dragstart", { bubbles: true, cancelable: true });
+  await fire(img, dragStart);
+  expect(dragStart.defaultPrevented).toBe(true);
+});
+
 it("sends the wheel as a scroll with its direction and amount", async () => {
   await renderLive();
   const surface = liveSurface();
@@ -421,6 +436,7 @@ it("sends nothing and keeps the live frame out of the tab order without control"
 
   expect(frameMocks.mutate).not.toHaveBeenCalled();
   expect(frameMocks.invalidateQueries).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="toolbar"]')).toBeNull();
 });
 
 it("shows the live frame as a picture that cannot be dragged or selected", async () => {
@@ -430,8 +446,357 @@ it("shows the live frame as a picture that cannot be dragged or selected", async
 
   expect(img.getAttribute("src")).toBe(PREVIEW_IMAGE);
   expect(img.draggable).toBe(false);
-  for (const className of ["select-none", "touch-none"]) {
+  for (const className of [
+    "select-none",
+    "touch-none",
+    "overscroll-none",
+    "[-webkit-tap-highlight-color:transparent]",
+    "[-webkit-touch-callout:none]",
+  ]) {
     expect(img.classList.contains(className)).toBe(true);
     expect(surface.classList.contains(className)).toBe(true);
   }
+  expect(surface.classList.contains("cursor-default")).toBe(true);
+  expect(surface.classList.contains("cursor-crosshair")).toBe(false);
+  expect(img.classList.contains("[-webkit-user-drag:none]")).toBe(true);
+  expect(surface.classList.contains("[-webkit-user-drag:none]")).toBe(true);
+});
+
+it("counts two presses in the same spot as a double click", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+
+  for (const type of ["pointerdown", "pointerup", "pointerdown", "pointerup"]) {
+    await fire(
+      type === "pointerdown" ? img : surface,
+      pointer(type, {
+        clientX: 500,
+        clientY: 300,
+        button: 0,
+        buttons: type === "pointerdown" ? 1 : 0,
+      }),
+    );
+  }
+
+  const clicks = sentInputs().map((input) => input.payload);
+  expect(clicks.map((payload) => [payload.type, payload.clickCount])).toEqual([
+    ["down", 1],
+    ["up", 1],
+    ["down", 2],
+    ["up", 2],
+  ]);
+});
+
+it("sends a held key again each time the key repeats", async () => {
+  await renderLive();
+  const surface = liveSurface();
+
+  const repeat = () =>
+    new KeyboardEvent("keydown", {
+      key: "Backspace",
+      bubbles: true,
+      cancelable: true,
+      repeat: true,
+    });
+  await fire(surface, repeat());
+  await fire(surface, repeat());
+
+  expect(frameMocks.mutate).toHaveBeenCalledTimes(2);
+  expect(frameMocks.mutate).toHaveBeenNthCalledWith(2, {
+    botId: "bot-1",
+    kind: "key",
+    payload: { key: "Backspace", modifiers: [] },
+  });
+});
+
+it("sends a printable key from the hidden field and a paste as text", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const input = surface.querySelector("input");
+  if (!input) throw new Error("the live frame has no text field");
+
+  const keydown = new KeyboardEvent("keydown", {
+    key: "a",
+    bubbles: true,
+    cancelable: true,
+  });
+  await fire(input, keydown);
+  expect(frameMocks.mutate).toHaveBeenNthCalledWith(1, {
+    botId: "bot-1",
+    kind: "key",
+    payload: { key: "a", modifiers: [] },
+  });
+  expect(keydown.defaultPrevented).toBe(true);
+
+  // A paste never presses a key this surface knows, so its value is the text to send.
+  input.value = "hi";
+  await fire(input, new Event("input", { bubbles: true }));
+  expect(frameMocks.mutate).toHaveBeenNthCalledWith(2, {
+    botId: "bot-1",
+    kind: "clipboard",
+    payload: { text: "hi" },
+  });
+  expect(input.value).toBe("");
+});
+
+it("focuses the hidden text field when a pointer presses the picture", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+  // Taking control focuses the field already; a press has to bring focus back on its own.
+  (document.activeElement as HTMLElement | null)?.blur();
+
+  await fire(img, pointer("pointerdown", { clientX: 500, clientY: 300, button: 0, buttons: 1 }));
+
+  const input = surface.querySelector("input");
+  expect(input).not.toBeNull();
+  expect(document.activeElement).toBe(input);
+});
+
+it("treats a tap as a click with its click count and opens the keyboard", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+  (document.activeElement as HTMLElement | null)?.blur();
+
+  await fire(
+    img,
+    pointer("pointerdown", {
+      pointerType: "touch",
+      clientX: 500,
+      clientY: 300,
+      button: 0,
+      buttons: 1,
+    }),
+  );
+  await fire(
+    surface,
+    pointer("pointerup", {
+      pointerType: "touch",
+      clientX: 500,
+      clientY: 300,
+      button: 0,
+      buttons: 0,
+    }),
+  );
+
+  const [down, up] = sentInputs();
+  expect(down.payload).toMatchObject({
+    type: "down",
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    x: 640,
+    y: 379,
+  });
+  expect(up.payload).toMatchObject({ type: "up", buttons: 0, clickCount: 1 });
+  expect(document.activeElement).toBe(surface.querySelector("input"));
+});
+
+it("scrolls the page the other way when a finger drags over it", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+
+  await fire(
+    img,
+    pointer("pointerdown", {
+      pointerType: "touch",
+      clientX: 500,
+      clientY: 300,
+      button: 0,
+      buttons: 1,
+    }),
+  );
+  // Forty CSS pixels to the left is more than a slop and one notch of 30 page pixels.
+  await fire(
+    surface,
+    pointer("pointermove", {
+      pointerType: "touch",
+      clientX: 460,
+      clientY: 300,
+      buttons: 1,
+    }),
+  );
+  await fire(
+    surface,
+    pointer("pointerup", {
+      pointerType: "touch",
+      clientX: 460,
+      clientY: 300,
+      button: 0,
+      buttons: 0,
+    }),
+  );
+
+  expect(sentInputs()).toEqual([
+    { botId: "bot-1", kind: "scroll", payload: { direction: "right", amount: 1, x: 589, y: 379 } },
+  ]);
+});
+
+it("holds a long press as a drag on the page", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+
+  await fire(
+    img,
+    pointer("pointerdown", {
+      pointerType: "touch",
+      clientX: 500,
+      clientY: 300,
+      button: 0,
+      buttons: 1,
+    }),
+  );
+  // The press turns into a drag once it has been held without travelling.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 470));
+  });
+  await fire(
+    surface,
+    pointer("pointermove", {
+      pointerType: "touch",
+      clientX: 550,
+      clientY: 300,
+      buttons: 1,
+    }),
+  );
+  await fire(
+    surface,
+    pointer("pointerup", {
+      pointerType: "touch",
+      clientX: 550,
+      clientY: 300,
+      button: 0,
+      buttons: 0,
+    }),
+  );
+
+  expect(sentInputs().map((input) => input.payload.type)).toEqual(["down", "move", "up"]);
+  expect(sentInputs()[0]?.payload).toMatchObject({ type: "down", buttons: 1, clickCount: 1 });
+});
+
+it("drops a cancelled touch without sending it", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+
+  await fire(
+    img,
+    pointer("pointerdown", {
+      pointerType: "touch",
+      clientX: 500,
+      clientY: 300,
+      button: 0,
+      buttons: 1,
+    }),
+  );
+  await fire(
+    surface,
+    pointer("pointercancel", { pointerType: "touch", clientX: 500, clientY: 300, buttons: 0 }),
+  );
+
+  expect(frameMocks.mutate).not.toHaveBeenCalled();
+});
+
+it("counts three taps in the same spot as a triple click", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+
+  for (let tap = 0; tap < 3; tap += 1) {
+    await fire(
+      img,
+      pointer("pointerdown", {
+        pointerType: "touch",
+        clientX: 500,
+        clientY: 300,
+        button: 0,
+        buttons: 1,
+      }),
+    );
+    await fire(
+      surface,
+      pointer("pointerup", {
+        pointerType: "touch",
+        clientX: 500,
+        clientY: 300,
+        button: 0,
+        buttons: 0,
+      }),
+    );
+  }
+
+  expect(sentInputs().map((input) => [input.payload.type, input.payload.clickCount])).toEqual([
+    ["down", 1],
+    ["up", 1],
+    ["down", 2],
+    ["up", 2],
+    ["down", 3],
+    ["up", 3],
+  ]);
+});
+
+it("scrolls down the page when a finger drags up the picture", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+
+  await fire(
+    img,
+    pointer("pointerdown", {
+      pointerType: "touch",
+      clientX: 500,
+      clientY: 300,
+      button: 0,
+      buttons: 1,
+    }),
+  );
+  // Forty CSS pixels up is more than a slop and one notch of 30 page pixels.
+  await fire(
+    surface,
+    pointer("pointermove", { pointerType: "touch", clientX: 500, clientY: 260, buttons: 1 }),
+  );
+
+  expect(sentInputs()).toEqual([
+    { botId: "bot-1", kind: "scroll", payload: { direction: "down", amount: 1, x: 640, y: 327 } },
+  ]);
+});
+
+it("sends the strip's page keys without clicking the page", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  frameImage();
+
+  const strip = surface.querySelector('[role="toolbar"]');
+  expect(strip).not.toBeNull();
+  const escapeKey = strip?.querySelector<HTMLButtonElement>('button[aria-label="Escape"]');
+  if (!escapeKey) throw new Error("the strip has no Escape key");
+  const input = surface.querySelector("input");
+  input?.focus();
+
+  // A finger on the strip belongs to the button, not to the page under it.
+  await fire(
+    escapeKey,
+    pointer("pointerdown", {
+      pointerType: "touch",
+      clientX: 50,
+      clientY: 570,
+      button: 0,
+      buttons: 1,
+    }),
+  );
+  expect(frameMocks.mutate).not.toHaveBeenCalled();
+
+  await act(async () => escapeKey.click());
+  expect(frameMocks.mutate).toHaveBeenCalledOnce();
+  expect(frameMocks.mutate).toHaveBeenCalledWith({
+    botId: "bot-1",
+    kind: "key",
+    payload: { key: "Escape", modifiers: [] },
+  });
+  // The strip keeps the page's field focused, so the phone keyboard stays with it.
+  expect(document.activeElement).toBe(input);
 });

@@ -19,3 +19,15 @@ echo "[browser] downloading Chrome for Testing"
 echo "[browser] writing .env paths"
 cd "$ROOT"
 node scripts/native/setup-env.mjs
+
+# browse drives that same Chromium through its extension. The pairing is bounded here, because an
+# unattended install must not sit for the default three minutes when the extension is missing.
+echo "[browser] installing the browse extension"
+bash scripts/native/browse-setup.sh --wait-seconds 45 ||
+  echo "[browse] extension setup skipped; run scripts/native/browse-setup.sh yourself" >&2
+
+# Stdio MCP servers are off by default, so browse's server is unusable until this writes the policy.
+# The check also requires a connected browser; a failed pairing fails it after the policy is written.
+echo "[browser] enabling stdio MCP servers for browse"
+bash scripts/native/browse-mcp-enable.sh --check ||
+  echo "[browse] MCP policy written, but the server or browser check failed; rerun scripts/native/browse-mcp-enable.sh --check once browse is up" >&2
