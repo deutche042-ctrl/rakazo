@@ -16,14 +16,14 @@ import {
 } from "../../../components/teach/TeachRecordingChrome";
 import { runsOnUserMachine } from "../../../lib/computers/computer-sandbox";
 import { screenFrames, screenIframeSandbox } from "../../../lib/computers/computer-screen";
-import { errorCode } from "../../../lib/query/user-error";
-import { BrowserLiveFrame } from "./computer-panel";
-import { useSpaceQueries } from "../../../lib/query/query";
 import {
   DARWIN_WINDOW_CONTROLS_WIDTH_PX,
   desktopBridge,
   windowChromeKind,
 } from "../../../lib/platform/desktop";
+import { useSpaceQueries } from "../../../lib/query/query";
+import { errorCode } from "../../../lib/query/user-error";
+import { BrowserLiveFrame } from "./computer-panel";
 import { ComputerReleaseActions } from "./computer-release-actions";
 import { DesktopKindEmptyState } from "./computer-view";
 
@@ -209,16 +209,8 @@ export function ComputerOverlay({
             computer?.kind === "desktop" && computer.state === "running" ? (
               <BrowserLiveFrame
                 bot={bot}
-                onPoint={
-                  hasControl && !inputForbidden
-                    ? (x, y) =>
-                        sendInput.mutate({
-                          botId: bot.id,
-                          kind: "pointer",
-                          payload: { x, y, type: "click" },
-                        })
-                    : undefined
-                }
+                interactive={hasControl && !inputForbidden}
+                onInput={(kind, payload) => sendInput.mutate({ botId: bot.id, kind, payload })}
               />
             ) : (
               <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-body text-muted-foreground/80" />
