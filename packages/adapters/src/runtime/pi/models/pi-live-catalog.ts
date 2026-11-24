@@ -77,10 +77,15 @@ export function liveCatalogEntry(
   const entry = listPiCatalog().find((entry) => entry.provider === provider);
   const sibling = liveModelSibling(siblingModels, provider, id);
   if (!entry || !sibling) return undefined;
+  const reasoning =
+    provider === OPENAI_COMPATIBLE_PROVIDER_ID
+      ? // A custom endpoint may think before it is saved as thinking; choosing a level is the test.
+        true
+      : // Every other provider keeps the sibling's answer until the account saves one.
+        (settings.reasoning ?? sibling.reasoning);
   const model = withModelCapabilities(sibling, {
     acceptsImages: settings.images,
-    // A custom endpoint may think before it is saved as thinking; choosing a level is the test.
-    reasoning: settings.reasoning || provider === OPENAI_COMPATIBLE_PROVIDER_ID,
+    reasoning,
   });
   return {
     ...entry,
@@ -89,10 +94,7 @@ export function liveCatalogEntry(
     label: catalogModelLabel(id),
     live: true,
     reasoning: model.reasoning,
-    thinkingLevels:
-      settings.reasoning || provider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? (getSupportedThinkingLevels(model) as ThinkingLevel[])
-        : ["off"],
+    thinkingLevels: reasoning ? (getSupportedThinkingLevels(model) as ThinkingLevel[]) : ["off"],
     images: model.input.includes("image"),
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,

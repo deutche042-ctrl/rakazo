@@ -1,4 +1,5 @@
-import { DEFAULT_MODEL_CONTEXT_WINDOW } from "@rakazo/contracts";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { DEFAULT_MODEL_CONTEXT_WINDOW, OPENAI_COMPATIBLE_PROVIDER_ID } from "@rakazo/contracts";
 import type { Deferred } from "@rakazo/core/test-async";
 import { deferred } from "@rakazo/core/test-async";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,17 @@ import {
 } from "./pi-live-catalog.js";
 import { isChatModelId } from "./pi-live-model.js";
 import { listPiCatalog } from "./pi-models.js";
+
+/** The built-in catalog has no custom-endpoint provider, so one test supplies its sibling. */
+const siblingOverride = vi.hoisted(() => ({ model: undefined as Model<Api> | undefined }));
+vi.mock("./pi-live-model.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./pi-live-model.js")>();
+  return {
+    ...actual,
+    liveModelSibling: (...args: Parameters<typeof actual.liveModelSibling>) =>
+      siblingOverride.model ?? actual.liveModelSibling(...args),
+  };
+});
 
 const provider = "openai";
 const base = listPiCatalog();
@@ -36,6 +48,7 @@ const merge = (live: string[], selected = new Set<string>()) =>
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  siblingOverride.model = undefined;
 });
 
 describe("live catalog merge and execution", () => {
@@ -75,6 +88,41 @@ describe("live catalog merge and execution", () => {
   it("recomputes recommendations for live IDs instead of inheriting a sibling's flag", () => {
     expect(liveCatalogEntry("openai-codex", "gpt-6.1-sol")?.recommended).toBe(true);
     expect(liveCatalogEntry("openai-codex", "gpt-future-chat")?.recommended).toBe(false);
+  });
+
+  it("keeps a live model's sibling reasoning when nothing is saved for it", () => {
+    const id = "deepseek-v4-pro-2099-01-01";
+    const bundled = listPiCatalog().find(
+      (entry) => entry.provider === "deepseek" && entry.id === "deepseek-v4-pro",
+    )!;
+    const described = liveCatalogEntry("deepseek", id);
+    expect(bundled.reasoning).toBe(true);
+    expect(described?.reasoning).toBe(true);
+    expect(described?.thinkingLevels).toEqual(bundled.thinkingLevels);
+    expect(described?.thinkingLevels?.length).toBeGreaterThan(1);
+    // A saved false is the account's answer and still wins over the sibling's true.
+    expect(liveCatalogEntry("deepseek", id, { reasoning: false })).toMatchObject({
+      reasoning: false,
+      thinkingLevels: ["off"],
+    });
+  });
+
+  it("offers thinking levels for a custom endpoint with nothing saved", () => {
+    siblingOverride.model = {
+      id: "custom-thinking",
+      name: "custom-thinking",
+      api: "openai-completions",
+      provider: OPENAI_COMPATIBLE_PROVIDER_ID,
+      baseUrl: "https://example.test/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      reasoning: false,
+      contextWindow: DEFAULT_MODEL_CONTEXT_WINDOW,
+      maxTokens: 8_192,
+    };
+    const described = liveCatalogEntry(OPENAI_COMPATIBLE_PROVIDER_ID, "custom-thinking");
+    expect(described?.reasoning).toBe(true);
+    expect(described?.thinkingLevels).toEqual(expect.arrayContaining(["off", "high"]));
   });
 
   it("defaults probing on and honors the deployment off switch", () => {
