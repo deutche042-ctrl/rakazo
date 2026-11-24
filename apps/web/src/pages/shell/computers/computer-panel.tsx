@@ -6,6 +6,7 @@ import { BotAvatar, Button } from "@rakazo/ui-web";
 import { useQuery } from "@tanstack/react-query";
 import { Globe, HardDrive, Maximize2, X } from "lucide-react";
 import type { ReactNode } from "react";
+import { useRef } from "react";
 import { ComputersUnavailableHint } from "../../../components/computers/ComputersUnavailableHint";
 import { runsOnUserMachine } from "../../../lib/computers/computer-sandbox";
 import { screenFrames, screenIframeSandbox } from "../../../lib/computers/computer-screen";
@@ -77,8 +78,16 @@ export function ComputerPanel({
 }
 
 /** The shared browser's page, one frame a second, rendered where the computer screen used to be. */
-export function BrowserLiveFrame({ bot }: { bot: Bot }) {
+export function BrowserLiveFrame({
+  bot,
+  onPoint,
+}: {
+  bot: Bot;
+  /** A click on the page in its own CSS pixels; absent while the viewer has no control. */
+  onPoint?: (x: number, y: number) => void;
+}) {
   const queries = useSpaceQueries();
+  const imageRef = useRef<HTMLImageElement>(null);
   const preview = useQuery({
     ...queries.computer.preview.queryOptions({ input: { botId: bot.id } }),
     retry: false,
@@ -97,7 +106,26 @@ export function BrowserLiveFrame({ bot }: { bot: Bot }) {
     );
   return (
     <div className="relative h-full overflow-hidden bg-black">
-      <img src={image} alt={t`Bot browser`} className="h-full w-full object-contain" />
+      <img
+        ref={imageRef}
+        src={image}
+        alt={t`Bot browser`}
+        className="h-full w-full object-contain"
+        style={onPoint ? { cursor: "crosshair" } : undefined}
+        onClick={(event) => {
+          const img = imageRef.current;
+          if (!onPoint || !img || !img.naturalWidth || !img.naturalHeight) return;
+          const rect = img.getBoundingClientRect();
+          // The image is letterboxed by object-contain; map through the drawn content box.
+          const scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+          const drawnWidth = img.naturalWidth * scale;
+          const drawnHeight = img.naturalHeight * scale;
+          const x = (event.clientX - rect.left - (rect.width - drawnWidth) / 2) / scale;
+          const y = (event.clientY - rect.top - (rect.height - drawnHeight) / 2) / scale;
+          if (x < 0 || y < 0 || x > img.naturalWidth || y > img.naturalHeight) return;
+          onPoint(Math.round(x), Math.round(y));
+        }}
+      />
       <span className="absolute start-2 top-2 rounded-full bg-black/60 px-2 py-0.5 text-caption text-white">
         <Trans>Live</Trans>
       </span>

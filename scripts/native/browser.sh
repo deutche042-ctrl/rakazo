@@ -52,6 +52,15 @@ echo $! > "$PIDFILE"
 
 for _ in $(seq 1 60); do
   if curl -sf -m 1 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
+    # A headless launch can come up with no page target after a restored profile; the helper and
+    # the panel both need one, so create it explicitly.
+    for _ in $(seq 1 20); do
+      if curl -s -m 1 "http://127.0.0.1:${PORT}/json/list" 2>/dev/null | grep -q '"type": *"page"'; then
+        break
+      fi
+      curl -s -m 2 -X PUT "http://127.0.0.1:${PORT}/json/new?about:blank" >/dev/null 2>&1 || true
+      sleep 0.5
+    done
     echo "[browser] ready"
     exit 0
   fi

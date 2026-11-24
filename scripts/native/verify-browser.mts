@@ -41,6 +41,14 @@ const snapshot = await provider.pageBrowser(ref, { command: "snapshot" }, contex
 const tabs = (await provider.browserTabs?.()) ?? [];
 const observation = await provider.observe(ref, context);
 writeFileSync("/tmp/rakazo-frame.jpg", observation.image);
+// The human click path: the same sendInput the overlay uses, then read the page again.
+await provider.sendInput(
+  ref,
+  { kind: "pointer", x: 640, y: 737, type: "click" },
+  { leaseId: "verify", holder: "user", fence: 0 },
+  context,
+);
+const afterClick = await provider.pageBrowser(ref, { command: "snapshot" }, context);
 
 const passed = navigated.ok === true && snapshot.ok === true && (snapshot.elements?.length ?? 0) > 0;
 if (!passed) {
@@ -67,6 +75,7 @@ console.log(
         height: observation.height,
         bytes: observation.image.byteLength,
       },
+      afterClick: { ok: afterClick.ok, url: afterClick.url, title: afterClick.title },
     },
     null,
     2,

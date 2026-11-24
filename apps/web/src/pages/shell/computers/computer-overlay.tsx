@@ -4,6 +4,7 @@ import type { Bot, ComputerReleaseReason, ComputerStatus, TaughtSkill } from "@r
 import { computerPreviewPlaceholder } from "@rakazo/i18n/computer-preview";
 import { computerLabel } from "@rakazo/i18n/computer-usage";
 import { BotAvatar, Button } from "@rakazo/ui-web";
+import { useMutation } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { SaveScreenshotButton } from "../../../components/computers/SaveScreenshotButton";
@@ -16,6 +17,7 @@ import {
 import { runsOnUserMachine } from "../../../lib/computers/computer-sandbox";
 import { screenFrames, screenIframeSandbox } from "../../../lib/computers/computer-screen";
 import { BrowserLiveFrame } from "./computer-panel";
+import { useSpaceQueries } from "../../../lib/query/query";
 import {
   DARWIN_WINDOW_CONTROLS_WIDTH_PX,
   desktopBridge,
@@ -76,6 +78,8 @@ export function ComputerOverlay({
   onRefreshTeaching,
   onClose,
 }: ComputerOverlayProps) {
+  const queries = useSpaceQueries();
+  const sendInput = useMutation(queries.computer.input.mutationOptions());
   // The picture is taken on the server from the running computer, so it does not wait for the frame
   // to connect; a user's own machine has no screen here to take.
   const canSaveScreenshot = !runsOnUserMachine(computer) && computer?.state === "running";
@@ -195,7 +199,19 @@ export function ComputerOverlay({
         <div className="relative min-h-0 flex-1 bg-background">
           {runsOnUserMachine(computer) ? (
             computer?.kind === "desktop" && computer.state === "running" ? (
-              <BrowserLiveFrame bot={bot} />
+              <BrowserLiveFrame
+                bot={bot}
+                onPoint={
+                  hasControl
+                    ? (x, y) =>
+                        sendInput.mutate({
+                          botId: bot.id,
+                          kind: "pointer",
+                          payload: { x, y, type: "click" },
+                        })
+                    : undefined
+                }
+              />
             ) : (
               <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-body text-muted-foreground/80" />
             )
