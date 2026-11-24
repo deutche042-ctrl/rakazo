@@ -1,0 +1,65 @@
+name: build-desktop
+
+# Builds the real Electron desktop app as an unsigned Linux AppImage. The app talks to a Rakazo
+# server that is already running (127.0.0.1:5173 or an existing instance URL), so nothing here
+# starts a server, signs, notarizes, or publishes an update.
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [native]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-desktop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: Linux x64 AppImage
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 12.18.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+      # The workspace's allowBuilds list intentionally blocks Electron's own postinstall; the
+      # binary electron-builder packages is downloaded by electron-builder itself.
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+      # The web app and the desktop main process compile against the generated Prisma client.
+      # generate only reads the schema, so this URL never has to be reachable.
+      - name: Generate the database client for desktop compilation
+        env:
+          DATABASE_URL: postgres://rakazo:rakazo@127.0.0.1:5433/rakazo
+        run: pnpm db:generate
+      - name: Build renderer and Electron main process
+        env:
+          # The production-mode compile resolves core's secrets guard.
+          RAKAZO_ALLOW_DEV_SECRETS: "1"
+        run: pnpm --filter @rakazo/web build && pnpm --filter @rakazo/desktop build
+      # Unsigned on purpose: no certificate is discovered and no secrets are referenced.
+      # --publish never keeps the GitHub publish config in package.json from uploading anything.
+      - name: Package unsigned x64 Linux AppImage
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: >-
+          pnpm --filter @rakazo/desktop exec electron-builder
+          --linux --x64 --publish never
+      - name: Upload AppImage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rakazo-desktop-appimage
+          path: apps/desktop/out/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
