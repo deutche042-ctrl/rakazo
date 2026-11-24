@@ -20,10 +20,14 @@ overwrite an existing `.env` without an explicit backup and operator consent.**
 | `SANDBOX_SUPERVISOR_TOKEN` | `openssl rand -hex 32` | API ↔ sandbox supervisor auth                                                 |
 | `RAKAZO_UPDATER_TOKEN`     | `openssl rand -hex 32` | Dedicated updater credential; unused until the updater profile is enabled     |
 
-Re-runs **preserve** an existing `.env` (they do not rotate secrets); they only append
-`POSTGRES_APP_PASSWORD` when an older `.env` lacks it. Empty
-required keys still fail closed at Compose validate time
-(`${VAR:?Set … in .env}`).
+The list, with the services that receive each key, is `x-generated-secrets` in
+`docker-compose.images.yml`. Re-runs **preserve** an existing `.env` (they do not rotate secrets);
+they only append `POSTGRES_APP_PASSWORD` when an older `.env` lacks it. The installer refuses to
+start with an empty required key.
+
+Started without a `.env` (from a [Docker panel](./self-host.md#from-a-docker-panel)), the stack
+generates the same keys once into its `secrets` volume and reuses them. A key set in `.env` or
+the environment wins over the generated one.
 
 Manual generation (same shapes the installer uses):
 

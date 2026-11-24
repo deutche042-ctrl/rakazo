@@ -9,6 +9,7 @@ interface ComposeService {
   pull_policy?: string;
   build?: unknown;
   command?: unknown;
+  entrypoint?: unknown;
   env_file?: unknown;
   /** YAML may parse unquoted scalars as null/number/boolean. */
   environment?: Record<string, unknown>;
@@ -25,6 +26,8 @@ const composeFile = path.resolve(repoRoot, "infra/compose/docker-compose.images.
 const publishWorkflowFile = path.resolve(repoRoot, ".github/workflows/publish-server-image.yml");
 const compose = parse(readFileSync(composeFile, "utf8"), { merge: true }) as {
   services: Record<string, ComposeService>;
+  "x-generated-secrets": string;
+  "x-start": string;
 };
 const publishWorkflow = parse(readFileSync(publishWorkflowFile, "utf8")) as {
   jobs?: {
@@ -61,6 +64,7 @@ describe("the images compose file", () => {
       "data-init",
       "migrate",
       "postgres",
+      "secrets",
       "supervisor",
       "tailscale-ingress",
       "updater",
@@ -163,7 +167,7 @@ describe("the images compose file", () => {
   });
 
   it("does not allocate a default network for offline init services", () => {
-    for (const name of ["computer", "data-init"]) {
+    for (const name of ["computer", "data-init", "secrets"]) {
       expect(compose.services[name]?.network_mode).toBe("none");
       expect(compose.services[name]?.networks).toBeUndefined();
     }
@@ -224,10 +228,32 @@ describe("the images compose file", () => {
     ]);
     expect(compose.services.api?.ports).toEqual(["127.0.0.1:${RAKAZO_API_PORT:-3100}:3100"]);
     for (const key of ["BETTER_AUTH_URL", "WEB_ORIGIN", "API_URL"]) {
-      expect(compose.services.api?.environment?.[key]).toBe(`\${${key}:-http://127.0.0.1:5173}`);
+      expect(compose.services.api?.environment?.[key]).toBe(
+        `\${${key}:-\${RAKAZO_PUBLIC_URL:-http://127.0.0.1:5173}}`,
+      );
     }
     expect(compose.services.postgres?.ports).toBeUndefined();
     expect(compose.services.supervisor?.ports).toBeUndefined();
+  });
+
+  it("gives each service only the generated secrets it receives, through its own volume", () => {
+    const generated = String(compose["x-generated-secrets"]).split(" ");
+    const services = new Set(generated.flatMap((entry) => entry.split(":")[2]?.split(",") ?? []));
+    expect([...services].sort()).toEqual(
+      ["api", "migrate", "postgres", "supervisor", "updater", "web", "worker"].sort(),
+    );
+    for (const name of services) {
+      expect(compose.services.secrets?.volumes).toContain(`secrets-${name}:/services/${name}`);
+      expect(compose.services[name]?.volumes).toContain(`secrets-${name}:/run/rakazo-secrets:ro`);
+      const start =
+        name === "postgres" ? compose.services[name]?.entrypoint : compose.services[name]?.command;
+      expect(start).toEqual(expect.arrayContaining(["sh", "-c", compose["x-start"]]));
+    }
+    // The canonical copies stay with the service that generates them.
+    for (const [name, service] of Object.entries(compose.services)) {
+      if (name === "secrets") continue;
+      expect(service.volumes ?? []).not.toContainEqual(expect.stringMatching(/^secrets:/));
+    }
   });
 
   it("passes logging variables to the supervisor without putting them on computer containers", () => {

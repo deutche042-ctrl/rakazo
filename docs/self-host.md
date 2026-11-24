@@ -39,7 +39,7 @@ from that release instead of `main`.
 (from the app image, on the internal network only) and pulls `ghcr.io/elie222/rakazo/computer`.
 Signup and local Docker computers work without an E2B account. Optional remote providers: set
 `SANDBOX_PROVIDER` to `e2b`, `novita`, `daytona`, `createos`, or `boat` and add the matching API key. The published-images
-Compose stack requires `SANDBOX_SUPERVISOR_TOKEN` for every provider; leave it empty and `compose up` fails closed.
+Compose stack uses `SANDBOX_SUPERVISOR_TOKEN` for every provider; the installer sets it in `.env`.
 
 Optional: set `OPENROUTER_API_KEY` or connect a model in the UI after signup. Other providers,
 local models and approvals are covered in [models](./self-host-models.md).
@@ -72,6 +72,35 @@ Open **Agent computer** on a bot, or send a message that uses the desktop, to se
 the local Docker computer. For in-stack Caddy plus remote E2B computers, use the
 [production Compose](./self-host-production.md#public-single-vm-deployment) path and `infra/compose/Caddyfile.prod`
 instead of this host proxy.
+
+### From a Docker panel
+
+Server panels that deploy a Compose file from a URL (Hostinger's Docker Manager, Coolify, Dokploy
+and similar) run the same file with no shell, installer or `.env`. Paste:
+
+```text
+https://raw.githubusercontent.com/elie222/rakazo/main/infra/compose/docker-compose.images.yml
+```
+
+On first start, a one-shot `secrets` service generates every secret the installer would
+([secrets checklist](./self-host-secrets.md)) into the `secrets` volume. Later starts reuse them and
+never replace one. Each service gets a copy of only the secrets it uses. A value you set as an
+environment variable in the panel always wins over the generated one, so set it before the first
+start or not at all: a changed database password or `ENCRYPTION_KEY` breaks an existing install.
+
+Nothing else is required. Optional variables:
+
+- `RAKAZO_PUBLIC_URL`: the address people open, such as `https://app.example.com`. It sets
+  `BETTER_AUTH_URL`, `WEB_ORIGIN` and `API_URL` and allows its host.
+- `OPENROUTER_API_KEY`, or add a model in the app after signup.
+- `RAKAZO_WEB_BIND`: the web port stays on `127.0.0.1:5173`, so nothing is public until you choose.
+  When the panel's proxy reaches the `web` service on port 5173 over Docker's network, leave it.
+  To open the app directly at the server's address, set `RAKAZO_WEB_BIND=0.0.0.0` and
+  `RAKAZO_PUBLIC_URL=http://<server-address>:5173`. That serves sign-in over plain HTTP, so use it
+  only to try Rakazo and put TLS in front before real use.
+
+The `secrets` volume holds `ENCRYPTION_KEY`, so back it up with the database: encrypted content
+cannot be read without it. Removing the stack's volumes deletes both.
 
 ### Restricted networks / mirror downloads
 

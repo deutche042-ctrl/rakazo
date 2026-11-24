@@ -235,36 +235,43 @@ download() {
   temporary_file=""
 }
 
+# The secrets a new install generates, as NAME:bytes, from the list in the Compose file that the
+# stack's own secrets service also reads. An older Compose file has none.
+read_generated_secrets() {
+  awk '
+    /^x-generated-secrets:/ { inside = 1; next }
+    inside && /^  [A-Z]/ { split($1, field, ":"); print field[1] ":" field[2]; next }
+    inside { exit }
+  ' "$COMPOSE_FILE"
+}
+
+# Random bytes for a generated secret's name; fails for any other name.
+secret_bytes() {
+  local entry
+  for entry in $generated_secrets; do
+    if [[ "${entry%%:*}" == "$1" ]]; then
+      echo "${entry#*:}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 create_env() {
-  local generated_encryption_key=false
+  local generated_encryption_key=false name bytes
+  [[ -n "$generated_secrets" ]] ||
+    fail "${COMPOSE_FILE} is from a release without a generated secret list. Run ${DOWNLOAD_BASE}/install-images.sh instead."
   umask 077
   temporary_file=$(mktemp "./${ENV_FILE}.tmp.XXXXXX")
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    case "$line" in
-      "POSTGRES_PASSWORD=")
-        printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 16)"
-        ;;
-      "POSTGRES_APP_PASSWORD=")
-        printf 'POSTGRES_APP_PASSWORD=%s\n' "$(openssl rand -hex 16)"
-        ;;
-      "BETTER_AUTH_SECRET=")
-        printf 'BETTER_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)"
-        ;;
-      "ENCRYPTION_KEY=")
-        printf 'ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)"
-        generated_encryption_key=true
-        ;;
-      "SCREEN_PROXY_SECRET=")
-        printf 'SCREEN_PROXY_SECRET=%s\n' "$(openssl rand -hex 32)"
-        ;;
-      "SANDBOX_SUPERVISOR_TOKEN="|"RAKAZO_UPDATER_TOKEN=")
-        printf '%s=%s\n' "${line%%=*}" "$(openssl rand -hex 32)"
-        ;;
-      *)
-        printf '%s\n' "$line"
-        ;;
-    esac
+    name="${line%=}"
+    if [[ "$line" == "${name}=" ]] && bytes=$(secret_bytes "$name"); then
+      printf '%s=%s\n' "$name" "$(openssl rand -hex "$bytes")"
+      [[ "$name" != ENCRYPTION_KEY ]] || generated_encryption_key=true
+    else
+      printf '%s\n' "$line"
+    fi
   done < "$ENV_EXAMPLE" > "$temporary_file"
 
   chmod 600 "$temporary_file"
@@ -287,20 +294,28 @@ add_missing_secrets() {
   fi
 }
 
+# The stack would generate a missing secret itself, but one blanked in an existing .env would no
+# longer match the database or the stored ciphertext, so the installer still requires each one.
 validate_required_secrets() {
-  if ! docker compose --env-file "$ENV_FILE" "${compose_files[@]}" -f - config --environment <<'YAML' | awk '
+  local entry name required="" overlay=$'services:\n  api:\n    environment:\n'
+  for entry in $generated_secrets; do
+    name="${entry%%:*}"
+    # Only the opt-in updater uses its token.
+    [[ "$name" != RAKAZO_UPDATER_TOKEN ]] || continue
+    required+=" $name"
+    overlay+="      _RAKAZO_VALIDATE_${name}: \${${name}:?Set ${name} in .env}"$'\n'
+  done
+  # An older Compose file without the list still requires each secret itself.
+  [[ -n "$required" ]] || return 0
+  if ! docker compose --env-file "$ENV_FILE" "${compose_files[@]}" -f - config --environment <<<"$overlay" | awk -v required="$required" '
     BEGIN {
-      required["POSTGRES_PASSWORD"] = 1
-      required["POSTGRES_APP_PASSWORD"] = 1
-      required["BETTER_AUTH_SECRET"] = 1
-      required["ENCRYPTION_KEY"] = 1
-      required["SCREEN_PROXY_SECRET"] = 1
-      required["SANDBOX_SUPERVISOR_TOKEN"] = 1
+      count = split(required, names, " ")
+      for (i = 1; i <= count; i++) wanted[names[i]] = 1
     }
     {
       name = $0
       sub(/=.*/, "", name)
-      if (!(name in required)) next
+      if (!(name in wanted)) next
       seen[name]++
 
       value = $0
@@ -309,21 +324,11 @@ validate_required_secrets() {
       if (value != "") nonempty[name]++
     }
     END {
-      for (name in required) {
+      for (name in wanted) {
         if (seen[name] != 1 || nonempty[name] != 1) exit 1
       }
     }
   '
-services:
-  api:
-    environment:
-      _RAKAZO_VALIDATE_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      _RAKAZO_VALIDATE_POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}
-      _RAKAZO_VALIDATE_BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
-      _RAKAZO_VALIDATE_ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
-      _RAKAZO_VALIDATE_SCREEN_PROXY_SECRET: ${SCREEN_PROXY_SECRET:?Set SCREEN_PROXY_SECRET in .env}
-      _RAKAZO_VALIDATE_SANDBOX_SUPERVISOR_TOKEN: ${SANDBOX_SUPERVISOR_TOKEN:?Set SANDBOX_SUPERVISOR_TOKEN in .env}
-YAML
   then
     fail "set every required secret in .env to a non-empty value."
   fi
@@ -397,6 +402,7 @@ for filename in "${required_files[@]}"; do
   download "$filename"
 done
 
+generated_secrets=$(read_generated_secrets)
 compose_files=(-f "$COMPOSE_FILE")
 override_present=""
 if [[ -f "$OVERRIDE_FILE" ]]; then
