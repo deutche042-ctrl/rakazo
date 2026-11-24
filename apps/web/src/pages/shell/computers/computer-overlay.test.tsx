@@ -36,6 +36,23 @@ vi.mock("../../../components/teach/TeachRecordingChrome", () => ({
   TeachRecordingChrome: () => null,
   TeachStopButton: () => null,
 }));
+vi.mock("@tanstack/react-query", () => ({
+  useMutation: () => ({ mutate: vi.fn() }),
+  useQuery: () => ({ data: { image: null } }),
+}));
+vi.mock("../../../lib/query/query", () => ({
+  useSpaceQueries: () => ({
+    computer: {
+      input: { mutationOptions: () => ({}) },
+      preview: {
+        queryOptions: () => ({
+          queryKey: ["computer", "preview"],
+          queryFn: async () => ({ image: null }),
+        }),
+      },
+    },
+  }),
+}));
 
 import { ComputerOverlay } from "./computer-overlay";
 
