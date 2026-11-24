@@ -2,7 +2,7 @@
 // Drives the desktop provider's page browser against the shared Chromium.
 //   node scripts/native/setup-env.mjs && bash scripts/native/browser.sh
 //   pnpm exec tsx scripts/native/verify-browser.mts
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DesktopSandboxProvider } from "../../packages/adapters/src/providers/computer/desktop/desktop-sandbox.js";
 
@@ -39,6 +39,8 @@ const navigated = await provider.pageBrowser(
 );
 const snapshot = await provider.pageBrowser(ref, { command: "snapshot" }, context);
 const tabs = (await provider.browserTabs?.()) ?? [];
+const observation = await provider.observe(ref, context);
+writeFileSync("/tmp/rakazo-frame.jpg", observation.image);
 
 const passed = navigated.ok === true && snapshot.ok === true && (snapshot.elements?.length ?? 0) > 0;
 if (!passed) {
@@ -59,6 +61,12 @@ console.log(
         tree: snapshot.tree?.slice(0, 160),
       },
       tabs,
+      capture: {
+        mimeType: observation.mimeType,
+        width: observation.width,
+        height: observation.height,
+        bytes: observation.image.byteLength,
+      },
     },
     null,
     2,

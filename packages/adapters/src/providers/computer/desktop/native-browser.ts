@@ -1,8 +1,15 @@
 import { spawn } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
 import { open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { BrowserTabInfo, PageBrowserCommand, PageBrowserResult } from "@rakazo/adapter-kit";
+import WebSocket from "ws";
+import type {
+  BrowserTabInfo,
+  ComputerInput,
+  PageBrowserCommand,
+  PageBrowserResult,
+} from "@rakazo/adapter-kit";
 
 /** The supervisor's own limits, so a native page browser answers like the in-container one. */
 const MAX_OUTPUT_BYTES = 512 * 1024;
@@ -90,9 +97,34 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+/** The JPEG's declared size, so the panel can map a click without a second CDP round trip. */
+function jpegSize(data: Buffer): { width: number; height: number } | undefined {
+  let offset = 2;
+  while (offset + 9 < data.length) {
+    if (data[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = data[offset + 1] ?? 0;
+    if (marker >= 0xc0 && marker <= 0xc3) {
+      return { height: data.readUInt16BE(offset + 5), width: data.readUInt16BE(offset + 7) };
+    }
+    offset += 2 + data.readUInt16BE(offset + 2);
+  }
+  return undefined;
+}
+
+/** One directory for every process on this host: the API, the worker and the helper scripts. */
+function browserStateDir(): string {
+  return (
+    process.env.RAKAZO_NATIVE_BROWSER_STATE?.trim() ||
+    (existsSync("/dev/shm") ? "/dev/shm/rakazo" : tmpdir())
+  );
+}
+
 /** One lock per display, because the API and the worker are separate processes. */
 export function browserLockPath(port: number): string {
-  return path.join(tmpdir(), `rakazo-browser-${port}.lock`);
+  return path.join(browserStateDir(), `rakazo-browser-${port}.lock`);
 }
 
 /**
@@ -100,6 +132,7 @@ export function browserLockPath(port: number): string {
  * process that died; remove it and try again.
  */
 export async function withBrowserLock<T>(lock: string, fn: () => Promise<T>): Promise<T> {
+  mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     let handle;
@@ -184,8 +217,7 @@ export class NativeBrowser {
   }
 
   /** The open tabs, each with the bot that opened it when one was seen working there. */
-  async listTabs(): Promise<BrowserTabInfo[]> {
-    try {
+  async listTabs(): Promise<BrowserTabInfo[]> {    try {
       const response = await fetch(`http://127.0.0.1:${this.options.port}/json/list`, {
         signal: AbortSignal.timeout(2_000),
       });
@@ -220,6 +252,129 @@ export class NativeBrowser {
     }
   }
 
+  /** A JPEG of the tab this bot last worked in. Never another bot's tab. */
+  async capture(
+    botId?: string,
+  ): Promise<{ image: Buffer; mimeType: "image/jpeg"; width: number; height: number } | undefined> {
+    const url = await this.pageSocketUrl(botId);
+    if (!url) return undefined;
+    const result = await this.sendCdp<{ data?: unknown }>(url, "Page.captureScreenshot", {
+      format: "jpeg",
+      quality: 60,
+      fromSurface: true,
+      captureBeyondViewport: false,
+    });
+    if (typeof result.data !== "string") return undefined;
+    const image = Buffer.from(result.data, "base64");
+    const size = jpegSize(image) ?? { width: 0, height: 0 };
+    return { image, mimeType: "image/jpeg", ...size };
+  }
+
+  /** Drives the tab this bot last worked in. Coordinates are CSS pixels of the captured page. */
+  async input(botId: string | undefined, input: ComputerInput): Promise<void> {
+    const url = await this.pageSocketUrl(botId);
+    if (!url) return;
+    const commands: Array<{ method: string; params: Record<string, unknown> }> = [];
+    if (input.kind === "pointer") {
+      const params = { x: input.x, y: input.y, button: input.button ?? "left", clickCount: 1 };
+      if (input.type === "move")
+        commands.push({
+          method: "Input.dispatchMouseEvent",
+          params: { type: "mouseMoved", ...params, button: "none" },
+        });
+      if (input.type === "down" || input.type === "click")
+        commands.push({ method: "Input.dispatchMouseEvent", params: { type: "mousePressed", ...params } });
+      if (input.type === "up" || input.type === "click")
+        commands.push({ method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", ...params } });
+    } else if (input.kind === "key") {
+      if (input.key.length === 1) {
+        commands.push({ method: "Input.insertText", params: { text: input.key } });
+      } else {
+        commands.push({ method: "Input.dispatchKeyEvent", params: { type: "keyDown", key: input.key } });
+        commands.push({ method: "Input.dispatchKeyEvent", params: { type: "keyUp", key: input.key } });
+      }
+    } else {
+      commands.push({ method: "Input.insertText", params: { text: input.text } });
+    }
+    if (commands.length) await this.sendCdpBatch(url, commands);
+  }
+
+  private async pageSocketUrl(botId?: string): Promise<string | undefined> {
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.options.port}/json/list`, {
+        signal: AbortSignal.timeout(2_000),
+      });
+      const pages = (await response.json()) as Array<{
+        id?: unknown;
+        type?: unknown;
+        url?: unknown;
+        title?: unknown;
+        webSocketDebuggerUrl?: unknown;
+      }>;
+      if (!Array.isArray(pages)) return undefined;
+      const usable = pages.filter(
+        (page) =>
+          page.type === "page" &&
+          typeof page.id === "string" &&
+          typeof page.webSocketDebuggerUrl === "string" &&
+          !(page.url === "about:blank" && !page.title),
+      ) as Array<{ id: string; webSocketDebuggerUrl: string }>;
+      if (!botId) return usable.at(-1)?.webSocketDebuggerUrl;
+      // The API serves preview and the worker runs the bot, so ownership must come from the
+      // shared file as well as this process's maps.
+      const owners = await this.readOwners();
+      const ownedId =
+        this.botTab.get(botId) ??
+        [...this.owned.entries()].find(([, bot]) => bot === botId)?.[0] ??
+        Object.entries(owners).find(([, bot]) => bot === botId)?.[0];
+      // Never borrow another bot's page: a screenshot and the click after it must stay on one tab.
+      return usable.find((page) => page.id === ownedId)?.webSocketDebuggerUrl;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private sendCdp<T>(url: string, method: string, params: Record<string, unknown>): Promise<T> {
+    return this.sendCdpBatch<T>(url, [{ method, params }]);
+  }
+
+  /** One socket per batch: a click is press+release, a key is down+up. */
+  private sendCdpBatch<T>(
+    url: string,
+    commands: Array<{ method: string; params: Record<string, unknown> }>,
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(url, { maxPayload: 32 * 1024 * 1024 });
+      const timer = setTimeout(() => {
+        socket.terminate();
+        reject(new Error("The browser did not answer"));
+      }, 5_000);
+      const lastId = commands.length;
+      socket.on("open", () => {
+        commands.forEach((command, index) => {
+          socket.send(JSON.stringify({ id: index + 1, ...command }));
+        });
+      });
+      socket.on("message", (raw) => {
+        let message: { id?: number; result?: unknown; error?: { message?: string } };
+        try {
+          message = JSON.parse(raw.toString());
+        } catch {
+          return;
+        }
+        if (message.id !== lastId) return;
+        clearTimeout(timer);
+        socket.close();
+        if (message.error) reject(new Error(message.error.message ?? "The browser refused it"));
+        else resolve(message.result as T);
+      });
+      socket.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  }
+
   private async tabUrls(): Promise<Map<string, string>> {
     const tabs = await this.listTabs();
     return new Map(tabs.map((tab) => [tab.id, tab.url]));
@@ -227,7 +382,7 @@ export class NativeBrowser {
 
   /** Ownership is written by the worker and read by the API, so it lives beside the lock. */
   private get ownersFile(): string {
-    return path.join(tmpdir(), `rakazo-browser-${this.options.port}-owners.json`);
+    return path.join(browserStateDir(), `rakazo-browser-${this.options.port}-owners.json`);
   }
 
   private async readOwners(): Promise<Record<string, string>> {
@@ -242,6 +397,7 @@ export class NativeBrowser {
   }
 
   private async writeOwners(owners: Record<string, string>): Promise<void> {
+    mkdirSync(browserStateDir(), { recursive: true, mode: 0o700 });
     const temp = `${this.ownersFile}.${process.pid}.tmp`;
     await writeFile(temp, JSON.stringify(owners), { mode: 0o600 });
     await rename(temp, this.ownersFile);

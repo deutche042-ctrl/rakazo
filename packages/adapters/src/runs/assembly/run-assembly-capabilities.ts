@@ -533,7 +533,9 @@ export async function resolveRunCapabilities(
     modelSeesImages ||
     Boolean(computerModel || checkpointModelResolver);
   const graphicalToolsAllowed = graphical && acceptsImages && !heldForTakeover;
-  const pageBrowserAllowed = graphical && browser.describe().capabilities.page && !heldForTakeover;
+  // A page browser does not need a graphical desktop: a host provider runs one shared Chromium.
+  // Gating this on `graphical` left browser_navigate/snapshot/act out of every desktop run.
+  const pageBrowserAllowed = browser.describe().capabilities.page && !heldForTakeover;
   const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
   const replyMode = runReplyMode(run.trigger, bot.replyMode, disabledBuiltinTools);
   const emailName = deps.inboundEmailDomain

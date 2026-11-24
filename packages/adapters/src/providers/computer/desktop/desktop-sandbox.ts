@@ -132,6 +132,8 @@ export class DesktopSandboxProvider implements SandboxProvider {
   ) => Promise<PageBrowserResult>;
   /** The tabs of the shared browser, each with the bot that opened it. */
   browserTabs?: () => Promise<BrowserTabInfo[]>;
+  /** The shared browser, when this host has one: frames and input for the panel. */
+  private readonly nativeBrowser?: NativeBrowser;
   private readonly processTrees = new Map<NativeProcessTree, { home: string; runId?: string }>();
   private processSweep?: NodeJS.Timeout;
 
@@ -186,11 +188,12 @@ export class DesktopSandboxProvider implements SandboxProvider {
     const browser = nativeBrowserOptions();
     if (browser) {
       const engine = new NativeBrowser(browser);
+      this.nativeBrowser = engine;
       const boxFor = (computer: ComputerRef) => this.boxFor(computer);
       this.pageBrowser = (computer, request, context) => {
         const box = boxFor(computer);
         return box
-          ? engine.run(request, box.home, computer.botId, context.signal)
+          ? engine.run(request, box.home, context.botId ?? computer.botId, context.signal)
           : Promise.reject(new Error("computer not found"));
       };
       this.browserTabs = () => engine.listTabs();
@@ -368,14 +371,36 @@ export class DesktopSandboxProvider implements SandboxProvider {
     computer: ComputerRef,
     input: ComputerInput,
     _lease: ControlLeaseRef,
-    _context: AdapterContext,
+    context: AdapterContext,
   ): Promise<void> {
+    if (this.nativeBrowser) {
+      await this.nativeBrowser.input(context.botId ?? computer.botId, input);
+      return;
+    }
     const box = this.boxFor(computer);
     if (box) applyPlaceholderAction(box, input);
   }
 
-  async observe(computer: ComputerRef) {
-    return placeholderObservation(this.requiredBox(computer).screen);
+  async observe(computer: ComputerRef, context?: AdapterContext) {
+    const box = this.requiredBox(computer);
+    if (this.nativeBrowser) {
+      const frame = await this.nativeBrowser.capture(context?.botId ?? computer.botId);
+      if (!frame) {
+        // A dead browser must not look like a one-pixel screen: preview then returns null and the
+        // panel offers to start it.
+        throw new Error("The shared browser is not running, or this bot has no tab yet");
+      }
+      return {
+        frameId: `${computer.botId}-${Date.now()}`,
+        capturedAt: new Date().toISOString(),
+        mimeType: frame.mimeType,
+        image: frame.image,
+        width: frame.width,
+        height: frame.height,
+        activeWindow: { id: "browser", title: "Shared browser" },
+      };
+    }
+    return placeholderObservation(box.screen);
   }
 
   async act(computer: ComputerRef, request: ComputerActionRequest, _context: AdapterContext) {
