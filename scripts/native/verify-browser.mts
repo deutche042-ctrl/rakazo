@@ -38,6 +38,7 @@ const navigated = await provider.pageBrowser(
   context,
 );
 const snapshot = await provider.pageBrowser(ref, { command: "snapshot" }, context);
+const tabs = (await provider.browserTabs?.()) ?? [];
 
 const passed = navigated.ok === true && snapshot.ok === true && (snapshot.elements?.length ?? 0) > 0;
 if (!passed) {
@@ -57,6 +58,7 @@ console.log(
         elements: snapshot.elements?.slice(0, 4),
         tree: snapshot.tree?.slice(0, 160),
       },
+      tabs,
     },
     null,
     2,

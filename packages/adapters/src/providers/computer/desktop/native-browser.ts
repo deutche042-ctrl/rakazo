@@ -150,6 +150,8 @@ export class NativeBrowser {
   private readonly owned = new Map<string, string>();
   /** Bot → the tab it last worked in, so a snapshot keeps the same attribution. */
   private readonly botTab = new Map<string, string>();
+  /** The URL the last command ended on, which names its tab even when the URL did not change. */
+  private lastResultUrl?: string;
 
   constructor(private readonly options: NativeBrowserOptions) {}
 
@@ -224,14 +226,27 @@ export class NativeBrowser {
 
   private async rememberOwner(botId: string, before: Map<string, string>) {
     const after = await this.tabUrls();
-    let target: string | undefined;
-    for (const [id, url] of after) {
-      if (before.get(id) !== url) {
-        target = id;
-        break;
+    const wanted = this.lastResultUrl ?? "";
+    const previous = this.botTab.get(botId);
+    let target = previous && after.has(previous) ? previous : undefined;
+    // A command that leaves the page on the same URL (a snapshot after navigating earlier) names
+    // no change, so the answer's URL identifies its tab instead.
+    if (!target && wanted) {
+      for (const [id, url] of after) {
+        if (url === wanted && (!this.owned.has(id) || this.owned.get(id) === botId)) {
+          target = id;
+          break;
+        }
       }
     }
-    if (!target) target = this.botTab.get(botId);
+    if (!target) {
+      for (const [id, url] of after) {
+        if (before.get(id) !== url) {
+          target = id;
+          break;
+        }
+      }
+    }
     if (target && after.has(target)) {
       this.botTab.set(botId, target);
       this.owned.set(target, botId);
@@ -316,7 +331,9 @@ export class NativeBrowser {
           // Exit 2 is the helper refusing the command before touching the page; pass its reply on.
           if (code === 2 && stdout) {
             try {
-              resolve(JSON.parse(stdout) as PageBrowserResult);
+              const refused = JSON.parse(stdout) as PageBrowserResult;
+              this.lastResultUrl = typeof refused.url === "string" ? refused.url : undefined;
+              resolve(refused);
               return;
             } catch {
               // Fall through to the failure below.
@@ -334,7 +351,9 @@ export class NativeBrowser {
             return;
           }
           try {
-            resolve(JSON.parse(stdout) as PageBrowserResult);
+            const parsed = JSON.parse(stdout) as PageBrowserResult;
+            this.lastResultUrl = typeof parsed.url === "string" ? parsed.url : undefined;
+            resolve(parsed);
           } catch {
             reject(new Error("Page browser returned an unreadable answer"));
           }
