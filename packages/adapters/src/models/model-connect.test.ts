@@ -458,7 +458,8 @@ describe("modelCredentialDto", () => {
       baseUrl: "https://example.invalid/v1",
       modelId: "qwen3-4b",
       reasoning: false,
-      thinkingLevels: ["off"],
+      // The endpoint's levels are offered so one can be chosen; picking one turns thinking on.
+      thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
       visionModelIds: [],
     });
   });
@@ -684,9 +685,8 @@ it.each([true, false])(
       ),
     ).toMatchObject({
       reasoning,
-      thinkingLevels: reasoning
-        ? ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-        : ["off"],
+      // A level is how thinking is enabled, so the list is offered before it is saved.
+      thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     });
   },
 );

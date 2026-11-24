@@ -139,6 +139,8 @@ async function createBaseRunSandbox(
 
 export class HostAwareSandbox implements SandboxProvider {
   readonly pageBrowser?: SandboxProvider["pageBrowser"];
+  /** The shared browser lives on the host, so its tab list comes from there. */
+  readonly browserTabs?: SandboxProvider["browserTabs"];
 
   constructor(
     private readonly isolated: SandboxProvider,
@@ -158,6 +160,8 @@ export class HostAwareSandbox implements SandboxProvider {
             });
       };
     }
+    const tabs = host.browserTabs?.bind(host) ?? isolated.browserTabs?.bind(isolated);
+    if (tabs) this.browserTabs = () => tabs();
   }
 
   ownsReference(computer: Pick<ComputerRef, "kind" | "providerRef">) {

@@ -172,6 +172,8 @@ export async function refreshComputerProvider(sandbox: SandboxProvider) {
 /** Resolve settings per operation; retain only the adapter for each current ciphertext. */
 export class ConfiguredSandbox implements SandboxProvider {
   readonly pageBrowser?: SandboxProvider["pageBrowser"];
+  /** Forwarded from the deployment's own provider so the panel can list the shared browser's tabs. */
+  readonly browserTabs?: SandboxProvider["browserTabs"];
   private selection: ComputerProviderSelection = { provider: "default", settings: null };
   private selectionLoadedAt = 0;
   private selected?: SandboxProvider;
@@ -214,6 +216,8 @@ export class ConfiguredSandbox implements SandboxProvider {
               error: "Page browser is unavailable on this computer.",
             };
       };
+    const tabs = primary.browserTabs?.bind(primary);
+    if (tabs) this.browserTabs = () => tabs();
   }
   /** Rereads everything now; a save on this instance calls it so its change applies at once. */
   async refresh() {

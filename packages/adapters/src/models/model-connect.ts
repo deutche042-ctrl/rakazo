@@ -319,7 +319,9 @@ export function compatibleModelThinkingLevels(
     openAiCompatibleModel(
       modelId,
       secret.baseUrl,
-      connectionModelSettings(secret, CONTRACT_OPENAI_COMPAT, modelId, row).reasoning,
+      // The endpoint may think even before it is saved as thinking: picking a level is what turns
+      // reasoning on, so advertising only "off" here made the first save impossible.
+      true,
       false,
       undefined,
       undefined,

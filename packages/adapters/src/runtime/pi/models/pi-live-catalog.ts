@@ -3,7 +3,11 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import type { ModelSettings, ThinkingLevel } from "@rakazo/contracts";
-import { canonicalPiProviderId, MediaModelRoleSchema } from "@rakazo/contracts";
+import {
+  canonicalPiProviderId,
+  MediaModelRoleSchema,
+  OPENAI_COMPATIBLE_PROVIDER_ID,
+} from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { parseModelSecret } from "../../../models/model-secret.js";
 import type { ModelCredentialAuthKind } from "./pi-catalog-availability.js";
@@ -75,7 +79,8 @@ export function liveCatalogEntry(
   if (!entry || !sibling) return undefined;
   const model = withModelCapabilities(sibling, {
     acceptsImages: settings.images,
-    reasoning: settings.reasoning,
+    // A custom endpoint may think before it is saved as thinking; choosing a level is the test.
+    reasoning: settings.reasoning || provider === OPENAI_COMPATIBLE_PROVIDER_ID,
   });
   return {
     ...entry,
@@ -84,10 +89,10 @@ export function liveCatalogEntry(
     label: catalogModelLabel(id),
     live: true,
     reasoning: model.reasoning,
-    // Only a model set to think gets levels, borrowed from its closest listed sibling.
-    thinkingLevels: settings.reasoning
-      ? (getSupportedThinkingLevels(model) as ThinkingLevel[])
-      : ["off"],
+    thinkingLevels:
+      settings.reasoning || provider === OPENAI_COMPATIBLE_PROVIDER_ID
+        ? (getSupportedThinkingLevels(model) as ThinkingLevel[])
+        : ["off"],
     images: model.input.includes("image"),
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
