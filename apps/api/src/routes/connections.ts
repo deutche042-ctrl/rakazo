@@ -1,5 +1,6 @@
+import { ORPCError } from "@orpc/server";
 import type { ConnectorCatalogItem } from "@rakazo/adapter-kit";
-import { planLiveConnectionSync } from "@rakazo/adapters";
+import { planLiveConnectionSync, sanitizeIntegrationError } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { availableChatApps, isAvailableChatApp } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
@@ -116,6 +117,15 @@ async function reconcileConnections(
 
 /** Serialize begin/revoke for one user+provider so slug-wide remote deletes cannot race a new connect. */
 
+/**
+ * One managed provider's catalog read. A failure is kept beside the provider that failed so the
+ * caller can report it instead of the empty list that reads as "no apps".
+ */
+type CatalogLoad =
+  | { ok: true; provider: string; items: ConnectorCatalogItem[] }
+  | { ok: false; provider: string; error: unknown };
+type CatalogFailure = Extract<CatalogLoad, { ok: false }>;
+
 export function connectionsRoutes(ctx: RouterContext) {
   const { deps, authed } = ctx;
   return {
@@ -131,8 +141,9 @@ export function connectionsRoutes(ctx: RouterContext) {
               (provider): provider is NonNullable<typeof provider> => Boolean(provider),
             )
           : deps.connectors.managedProviders();
-        const catalogs = await Promise.all(
-          providers.map(async (provider): Promise<ConnectorCatalogItem[]> => {
+        const loads = await Promise.all(
+          providers.map(async (provider): Promise<CatalogLoad> => {
+            const providerId = provider.describe().id;
             try {
               const [items, reconnectRefs] = await Promise.all([
                 provider.catalog(adapterContext, input.query),
@@ -143,29 +154,41 @@ export function connectionsRoutes(ctx: RouterContext) {
                 await reconcileConnections(
                   deps,
                   context.actor,
-                  provider.describe().id,
+                  providerId,
                   nowConnected,
                   reconnectRefs,
                   async () => provider.listConnectedRefs?.(adapterContext),
                 ).catch((error) => {
-                  getLogger().error(
-                    `${provider.describe().id} connection reconciliation failed`,
-                    error,
-                  );
+                  getLogger().error(`${providerId} connection reconciliation failed`, error);
                 });
               }
-              return items;
-            } catch {
-              return [];
+              return { ok: true, provider: providerId, items };
+            } catch (error) {
+              // The client went away before the catalog came back; nobody reads the answer.
+              if (context.signal?.aborted) return { ok: true, provider: providerId, items: [] };
+              return { ok: false, provider: providerId, error };
             }
           }),
         );
+        const failures = loads.filter((load): load is CatalogFailure => !load.ok);
+        for (const failure of failures)
+          getLogger().error("integration.catalog_failed", sanitizeIntegrationError(failure.error), {
+            provider: failure.provider,
+          });
+        // The contract is a bare list with no field for an error, so an unreachable provider is
+        // the procedure's own failure: a shorter list would look like the deployment has no apps.
+        if (failures.length > 0)
+          throw new ORPCError("SERVICE_UNAVAILABLE", {
+            message: `The ${failures.map((failure) => failure.provider).join(", ")} integration catalog is unavailable.`,
+            cause: failures[0]!.error,
+          });
+        const catalogs = loads.flatMap((load) => (load.ok ? load.items : []));
         const chatApps = deps.messaging?.enabled
           ? availableChatApps(deps.messaging.providers, Boolean(deps.messagingInstallations))
           : [];
-        return catalogs
-          .flat()
-          .map((item) => (isAvailableChatApp(item, chatApps) ? { ...item, chatApp: true } : item));
+        return catalogs.map((item) =>
+          isAvailableChatApp(item, chatApps) ? { ...item, chatApp: true } : item,
+        );
       }),
       list: authed.connections.list.handler(async ({ context }) => {
         const rows = await deps.prisma.connection.findMany({
