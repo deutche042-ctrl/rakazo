@@ -412,7 +412,7 @@ function LiveSurface({
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (!interactive || event.isComposing) return;
+    if (!interactive || event.nativeEvent.isComposing) return;
     if (isEditableTarget(event.target)) return;
     const key = event.key;
     if (LIVE_MODIFIER_KEYS.has(key) || (!LIVE_KEYS.has(key) && key.length !== 1)) return;
