@@ -31,10 +31,13 @@ function isForbidden(error: unknown) {
 export function useBrowserLive({
   botId,
   enabled = true,
+  interactive = false,
 }: {
   botId: string | undefined;
   /** False while the panel is closed; the poll stops and input is refused. */
   enabled?: boolean;
+  /** Whether control is held; each new grant starts a fresh input episode. */
+  interactive?: boolean;
 }) {
   const focused = useIsFocused();
   const foreground = useAppForeground();
@@ -47,18 +50,36 @@ export function useBrowserLive({
   const pokePreview = useRef<(() => void) | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
-  // A refused input must not keep firing while the lease is gone; the next successful read
-  // (after Take control) clears this again.
+  // A refusal belongs to the control episode that sent the input; a later grant must not keep
+  // the previous episode's refusal in force.
   const forbiddenRef = useRef(false);
   forbiddenRef.current = forbidden;
+  const controlEpisode = useRef(0);
+  const wasInteractive = useRef(interactive);
+  // One computer/input at a time, so a tap's up cannot overtake its own down.
+  const inputQueue = useRef<Promise<void>>(Promise.resolve());
 
   // Another bot's browser must not keep showing while its own first frame is on the way.
   useEffect(() => {
     lastImage.current = null;
     setImage(null);
     setForbidden(false);
+    forbiddenRef.current = false;
+    controlEpisode.current += 1;
+    inputQueue.current = Promise.resolve();
+    wasInteractive.current = interactive;
     setRefreshKey(0);
   }, [botId]);
+
+  // Control granted again starts a new episode, which clears an earlier refusal.
+  useEffect(() => {
+    const granted = interactive && !wasInteractive.current;
+    wasInteractive.current = interactive;
+    if (!granted) return;
+    controlEpisode.current += 1;
+    forbiddenRef.current = false;
+    setForbidden(false);
+  }, [interactive]);
 
   useEffect(() => {
     if (!active || !botId) return;
@@ -81,6 +102,7 @@ export function useBrowserLive({
         return;
       }
       reading = true;
+      const sentEpisode = controlEpisode.current;
       try {
         const answer = await rpc("computer/preview", { botId });
         if (cancelled) return;
@@ -90,10 +112,11 @@ export function useBrowserLive({
           setImage(answer.image);
           setRefreshKey((key) => key + 1);
         }
-        setForbidden(false);
+        // Seeing the page says nothing about holding control, so a refusal stays in force.
       } catch (error) {
         if (cancelled) return;
-        if (isForbidden(error)) setForbidden(true);
+        // A refusal from an earlier episode must not block the current one.
+        if (isForbidden(error) && controlEpisode.current === sentEpisode) setForbidden(true);
       } finally {
         reading = false;
         if (cancelled) return;
@@ -123,11 +146,24 @@ export function useBrowserLive({
   const sendInput = useCallback<BrowserLiveInput>(
     (kind, payload) => {
       if (!botId || !activeRef.current || forbiddenRef.current) return;
+      // Ask for a frame now; a slow input still gets a fresh read once it lands.
       burstUntil.current = Date.now() + BROWSER_PREVIEW_BURST_FOR_MS;
       pokePreview.current?.();
-      void rpc("computer/input", { botId, kind, payload }).catch((error: unknown) => {
-        if (isForbidden(error)) setForbidden(true);
-      });
+      const sentEpisode = controlEpisode.current;
+      // Chain each request behind the last so the browser sees the events in call order.
+      inputQueue.current = inputQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          try {
+            await rpc("computer/input", { botId, kind, payload });
+          } catch (error) {
+            if (isForbidden(error) && controlEpisode.current === sentEpisode) setForbidden(true);
+            return;
+          }
+          // The page has taken the input: renew the burst from when it landed.
+          burstUntil.current = Date.now() + BROWSER_PREVIEW_BURST_FOR_MS;
+          pokePreview.current?.();
+        });
     },
     [botId],
   );

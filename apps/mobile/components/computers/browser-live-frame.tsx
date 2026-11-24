@@ -72,11 +72,17 @@ export function BrowserLiveFrame({
   const naturalRef = useRef(natural);
   naturalRef.current = natural;
   const interactiveRef = useRef(interactive);
-  interactiveRef.current = interactive;
   const inputRef = useRef(onInput);
-  inputRef.current = onInput;
+  // Kept current after render rather than during it; the handlers read them through refs.
+  useEffect(() => {
+    interactiveRef.current = interactive;
+    inputRef.current = onInput;
+  }, [interactive, onInput]);
 
   const gesture = useRef<Gesture | null>(null);
+  // The input session that received the current press. A release must use it even if control
+  // has already gone, or the page keeps the pointer's button down.
+  const pressedSession = useRef<BrowserLiveInput | null>(null);
   const pendingMove = useRef<{ x: number; y: number } | null>(null);
   const moveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const click = useRef<{ at: number; x: number; y: number; count: number } | null>(null);
@@ -110,20 +116,49 @@ export function BrowserLiveFrame({
     [],
   );
 
+  // Losing the input session mid-drag must still release the press the page already saw. The
+  // queued movement is dropped, and the up goes through the session that received the down.
+  useEffect(() => {
+    if (interactive) return;
+    const current = gesture.current;
+    gesture.current = null;
+    stopMove();
+    const session = pressedSession.current;
+    pressedSession.current = null;
+    if (!current || current.mode !== "drag" || !session) return;
+    const up = current.last;
+    if (up) session("pointer", pointerInput(up, "up", current.clickCount));
+  }, [interactive]);
+
   function send(kind: Parameters<BrowserLiveInput>[0], payload: Record<string, unknown>) {
     if (!interactiveRef.current) return;
     inputRef.current?.(kind, payload);
   }
 
-  function sendPointer(point: PagePoint, type: "down" | "move" | "up", clickCount: number) {
-    send("pointer", {
+  function pointerInput(point: PagePoint, type: "down" | "move" | "up", clickCount: number) {
+    return {
       x: point.x,
       y: point.y,
       type,
       button: "left",
       buttons: type === "up" ? 0 : 1,
       ...(type === "move" ? {} : { clickCount }),
-    });
+    };
+  }
+
+  function sendPointer(point: PagePoint, type: "down" | "move" | "up", clickCount: number) {
+    send("pointer", pointerInput(point, type, clickCount));
+  }
+
+  /** A release goes through the session that saw the press, even after control is lost. */
+  function sendPointerThrough(
+    session: BrowserLiveInput | null | undefined,
+    point: PagePoint,
+    type: "down" | "move" | "up",
+    clickCount: number,
+  ) {
+    if (session) session("pointer", pointerInput(point, type, clickCount));
+    else sendPointer(point, type, clickCount);
   }
 
   /** Map a touch in this view to the page, through the letterbox `resizeMode="contain"` draws. */
@@ -167,7 +202,8 @@ export function BrowserLiveFrame({
     const move = pendingMove.current;
     if (!move) return;
     pendingMove.current = null;
-    sendPointer({ x: move.x, y: move.y, inside: true }, "move", 1);
+    // The whole drag stays on the session that saw the down, even if the callback changes.
+    sendPointerThrough(pressedSession.current, { x: move.x, y: move.y, inside: true }, "move", 1);
     moveTimer.current = setTimeout(() => {
       moveTimer.current = null;
       flushMove();
@@ -180,14 +216,16 @@ export function BrowserLiveFrame({
   }
 
   /** The release has to land where the pointer is, so the last move goes first. */
-  function flushPendingMove() {
+  function flushPendingMove(session?: BrowserLiveInput | null) {
     if (moveTimer.current) {
       clearTimeout(moveTimer.current);
       moveTimer.current = null;
     }
     const move = pendingMove.current;
     pendingMove.current = null;
-    if (move) sendPointer({ x: move.x, y: move.y, inside: true }, "move", 1);
+    if (move) {
+      sendPointerThrough(session, { x: move.x, y: move.y, inside: true }, "move", 1);
+    }
   }
 
   function stopMove() {
@@ -201,6 +239,7 @@ export function BrowserLiveFrame({
   function grant(event: GestureResponderEvent) {
     // A previous gesture left nothing to send; a move timer must not outlive it.
     stopMove();
+    pressedSession.current = null;
     const localX = event.nativeEvent.locationX;
     const localY = event.nativeEvent.locationY;
     const point = pagePoint(localX, localY);
@@ -242,6 +281,7 @@ export function BrowserLiveFrame({
       }
       current.mode = "drag";
       current.clickCount = clickCountFor(current.startLocalX, current.startLocalY, Date.now());
+      pressedSession.current = inputRef.current ?? null;
       sendPointer(start, "down", current.clickCount);
       queueMove(point);
       return;
@@ -281,9 +321,11 @@ export function BrowserLiveFrame({
       return;
     }
     if (current.mode === "drag") {
-      flushPendingMove();
+      const session = pressedSession.current ?? inputRef.current;
+      pressedSession.current = null;
+      flushPendingMove(session);
       const up = point ?? current.last;
-      if (up) sendPointer(up, "up", current.clickCount);
+      if (up) sendPointerThrough(session, up, "up", current.clickCount);
       return;
     }
     stopMove();

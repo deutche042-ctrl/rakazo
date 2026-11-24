@@ -6,6 +6,16 @@ import { NativeSymbol } from "../native/native-symbol";
 
 type BrowserTabList = NonNullable<ComputerStatus["browserTabs"]>;
 
+/** A tab with no title shows only its host: never its path, query, fragment or sign-in. */
+function tabTitle(tab: { title: string; url: string }, untitled: string) {
+  if (tab.title) return tab.title;
+  try {
+    return new URL(tab.url).host || untitled;
+  } catch {
+    return untitled;
+  }
+}
+
 /**
  * The shared browser's open tabs, each labelled with the bot that opened it. Mobile only shows
  * them: focusing a tab is a desktop convenience the small screen does not need.
@@ -41,13 +51,16 @@ export function BrowserTabs({
       >
         {tabs.map((tab) => {
           const own = Boolean(botId) && tab.botId === botId;
-          const title = tab.title || tab.url;
+          const title = tabTitle(tab, t`Untitled`);
           const botName = tab.botName || t`Unclaimed`;
+          const label = own
+            ? `${botName}, ${title}, ${t`This bot’s tab`}`
+            : `${botName}, ${title}`;
           return (
             <View
               key={tab.id}
               accessible
-              accessibilityLabel={`${botName}, ${title}`}
+              accessibilityLabel={label}
               style={[
                 styles.chip,
                 {

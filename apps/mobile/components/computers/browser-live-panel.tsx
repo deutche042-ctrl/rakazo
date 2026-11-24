@@ -44,7 +44,7 @@ export function BrowserLivePanel({
 }) {
   const { t } = useLingui();
   const tokens = useMobileTokens();
-  const live = useBrowserLive({ botId, enabled });
+  const live = useBrowserLive({ botId, enabled, interactive });
   const notified = useRef(false);
   useEffect(() => {
     if (live.forbidden) {
