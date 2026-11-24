@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { open, stat, unlink } from "node:fs/promises";
+import { open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BrowserTabInfo, PageBrowserCommand, PageBrowserResult } from "@rakazo/adapter-kit";
@@ -196,7 +196,8 @@ export class NativeBrowser {
         type?: unknown;
       }>;
       if (!Array.isArray(tabs)) return [];
-      const open = new Set<string>();
+      const liveIds = new Set<string>();
+      const shared = await this.readOwners();
       const result: BrowserTabInfo[] = [];
       for (const tab of tabs) {
         if (tab.type !== "page" || typeof tab.id !== "string") continue;
@@ -204,15 +205,15 @@ export class NativeBrowser {
         const title = typeof tab.title === "string" ? tab.title : "";
         // Chromium starts on a blank tab; it is not something a bot opened.
         if (url === "about:blank" && !title) continue;
-        open.add(tab.id);
+        liveIds.add(tab.id);
         result.push({
           id: tab.id,
           title,
           url,
-          botId: this.owned.get(tab.id) ?? null,
+          botId: this.owned.get(tab.id) ?? shared[tab.id] ?? null,
         });
       }
-      for (const id of this.owned.keys()) if (!open.has(id)) this.owned.delete(id);
+      for (const id of this.owned.keys()) if (!liveIds.has(id)) this.owned.delete(id);
       return result;
     } catch {
       return [];
@@ -222,6 +223,28 @@ export class NativeBrowser {
   private async tabUrls(): Promise<Map<string, string>> {
     const tabs = await this.listTabs();
     return new Map(tabs.map((tab) => [tab.id, tab.url]));
+  }
+
+  /** Ownership is written by the worker and read by the API, so it lives beside the lock. */
+  private get ownersFile(): string {
+    return path.join(tmpdir(), `rakazo-browser-${this.options.port}-owners.json`);
+  }
+
+  private async readOwners(): Promise<Record<string, string>> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(this.ownersFile, "utf8"));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, string>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private async writeOwners(owners: Record<string, string>): Promise<void> {
+    const temp = `${this.ownersFile}.${process.pid}.tmp`;
+    await writeFile(temp, JSON.stringify(owners), { mode: 0o600 });
+    await rename(temp, this.ownersFile);
   }
 
   private async rememberOwner(botId: string, before: Map<string, string>) {
@@ -250,6 +273,9 @@ export class NativeBrowser {
     if (target && after.has(target)) {
       this.botTab.set(botId, target);
       this.owned.set(target, botId);
+      const owners = await this.readOwners();
+      owners[target] = botId;
+      await this.writeOwners(owners).catch(() => undefined);
     }
   }
 
