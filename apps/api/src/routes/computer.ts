@@ -93,6 +93,18 @@ function callerWorkspacePath(resolve: () => string): string {
   }
 }
 
+/** A screen names the held buttons and click count as numbers. Anything else is not one. */
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** The screen may send the held modifier keys as a list or as one name. */
+function modifierList(value: unknown): string[] {
+  if (Array.isArray(value))
+    return value.filter((entry): entry is string => typeof entry === "string" && entry !== "");
+  return typeof value === "string" && value ? [value] : [];
+}
+
 /** The server's file limit, lowered to what the computer's own transport can carry. */
 function transferMaxBytes(deps: RouterContext["deps"], kind: string) {
   return Math.min(
@@ -442,9 +454,19 @@ export function computerRoutes(ctx: RouterContext) {
           typeof input.payload.skillId === "string" && input.payload.skillId
             ? input.payload.skillId
             : undefined;
+        // The pointer and key payloads carry the extra fields the shared browser needs to drag,
+        // double-click and hold modifiers; the teaching recording ignores what it does not know.
+        const modifiers = modifierList(input.payload.modifiers);
+        const buttons = optionalNumber(input.payload.buttons);
+        const clickCount = optionalNumber(input.payload.clickCount);
         const mapped = {
           ...(input.kind === "key"
-            ? { kind: "key" as const, key: String(input.payload.key ?? ""), sensitive }
+            ? {
+                kind: "key" as const,
+                key: String(input.payload.key ?? ""),
+                ...(modifiers.length ? { modifiers } : {}),
+                sensitive,
+              }
             : input.kind === "clipboard"
               ? {
                   kind: "clipboard" as const,
@@ -464,6 +486,8 @@ export function computerRoutes(ctx: RouterContext) {
                     x: Number(input.payload.x ?? 0),
                     y: Number(input.payload.y ?? 0),
                     button: (input.payload.button as "left" | "right" | undefined) ?? "left",
+                    ...(buttons !== undefined ? { buttons } : {}),
+                    ...(clickCount !== undefined ? { clickCount } : {}),
                     type:
                       (input.payload.type as "move" | "down" | "up" | "click" | undefined) ??
                       "click",
