@@ -114,6 +114,92 @@ function jpegSize(data: Buffer): { width: number; height: number } | undefined {
   return undefined;
 }
 
+/**
+ * The keys the helper sends as X11 names. Chromium wants its own names, and a name it does not
+ * know is dropped, so every one of these is mapped before it reaches Input.dispatchKeyEvent.
+ */
+const X11_KEY_NAMES: Record<string, string> = {
+  Return: "Enter",
+  BackSpace: "Backspace",
+  Left: "ArrowLeft",
+  Right: "ArrowRight",
+  Up: "ArrowUp",
+  Down: "ArrowDown",
+};
+
+interface KeyDefinition {
+  key: string;
+  code: string;
+  virtualKeyCode: number;
+  text?: string;
+}
+
+/** Puppeteer's US keyboard values for the keys that are not a printable character. */
+const SPECIAL_KEYS: Record<string, KeyDefinition> = {
+  Enter: { key: "Enter", code: "Enter", virtualKeyCode: 13, text: "\r" },
+  Tab: { key: "Tab", code: "Tab", virtualKeyCode: 9 },
+  Backspace: { key: "Backspace", code: "Backspace", virtualKeyCode: 8 },
+  Escape: { key: "Escape", code: "Escape", virtualKeyCode: 27 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40 },
+};
+
+/** Alt 1, Ctrl 2, Meta 4, Shift 8, as Input.dispatchKeyEvent expects. */
+function modifierMask(modifiers: readonly string[] | undefined): number {
+  let mask = 0;
+  for (const modifier of modifiers ?? []) {
+    switch (modifier.toLowerCase()) {
+      case "alt":
+        mask |= 1;
+        break;
+      case "control":
+      case "ctrl":
+        mask |= 2;
+        break;
+      case "meta":
+      case "command":
+      case "cmd":
+        mask |= 4;
+        break;
+      case "shift":
+        mask |= 8;
+        break;
+    }
+  }
+  return mask;
+}
+
+/** The physical key of a printable character, which a page's keydown listener reads. */
+function codeForCharacter(character: string): string {
+  if (/^[a-z]$/i.test(character)) return `Key${character.toUpperCase()}`;
+  if (/^[0-9]$/.test(character)) return `Digit${character}`;
+  const punctuation: Record<string, string> = {
+    " ": "Space",
+    "-": "Minus",
+    "=": "Equal",
+    "[": "BracketLeft",
+    "]": "BracketRight",
+    "\\": "Backslash",
+    ";": "Semicolon",
+    "'": "Quote",
+    ",": "Comma",
+    ".": "Period",
+    "/": "Slash",
+    "`": "Backquote",
+  };
+  return punctuation[character] ?? "";
+}
+
+/** One wall-clock retry for Chrome's transient "Unable to capture screenshot". */
+function isScreenshotUnavailable(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.toLowerCase().includes("unable to capture screenshot")
+  );
+}
+
 /** One directory for every process on this host: the API, the worker and the helper scripts. */
 function browserStateDir(): string {
   return (
@@ -252,46 +338,167 @@ export class NativeBrowser {
     }
   }
 
-  /** A JPEG of the tab this bot last worked in. Never another bot's tab. */
+  /**
+   * A JPEG of the tab this bot last worked in. Never another bot's tab. Held under the shared
+   * lock so a helper command cannot navigate the page in the middle of the capture.
+   */
   async capture(
+    botId?: string,
+  ): Promise<{ image: Buffer; mimeType: "image/jpeg"; width: number; height: number } | undefined> {
+    return this.withLock(() => this.captureFrame(botId));
+  }
+
+  private async captureFrame(
     botId?: string,
   ): Promise<{ image: Buffer; mimeType: "image/jpeg"; width: number; height: number } | undefined> {
     const url = await this.pageSocketUrl(botId);
     if (!url) return undefined;
-    const result = await this.sendCdp<{ data?: unknown }>(url, "Page.captureScreenshot", {
-      format: "jpeg",
-      quality: 60,
-      fromSurface: true,
-      captureBeyondViewport: false,
-    });
+    const capture = () =>
+      this.sendCdp<{ data?: unknown }>(url, "Page.captureScreenshot", {
+        format: "jpeg",
+        quality: 60,
+        fromSurface: true,
+        captureBeyondViewport: false,
+      });
+    let result: { data?: unknown };
+    try {
+      result = await capture();
+    } catch (error) {
+      // Chrome briefly refuses while it is committing a frame; one retry settles it.
+      if (!isScreenshotUnavailable(error)) throw error;
+      result = await capture();
+    }
     if (typeof result.data !== "string") return undefined;
     const image = Buffer.from(result.data, "base64");
     const size = jpegSize(image) ?? { width: 0, height: 0 };
     return { image, mimeType: "image/jpeg", ...size };
   }
 
-  /** Drives the tab this bot last worked in. Coordinates are CSS pixels of the captured page. */
+  /**
+   * Drives the tab this bot last worked in. Coordinates are CSS pixels of the captured page.
+   * Held under the shared lock: a click is press+release and must not interleave with a helper
+   * command that changes which page is under the point.
+   */
   async input(botId: string | undefined, input: ComputerInput): Promise<void> {
+    return this.withLock(() => this.dispatchInput(botId, input));
+  }
+
+  /** Turns the wheel over a CSS pixel of the captured page. */
+  async scroll(
+    botId: string | undefined,
+    scroll: { x?: number; y?: number; deltaX: number; deltaY: number },
+  ): Promise<void> {
+    return this.withLock(async () => {
+      const url = await this.pageSocketUrl(botId);
+      if (!url) return;
+      await this.sendCdpBatch(url, [
+        {
+          method: "Input.dispatchMouseEvent",
+          params: {
+            type: "mouseWheel",
+            x: scroll.x ?? 0,
+            y: scroll.y ?? 0,
+            deltaX: scroll.deltaX,
+            deltaY: scroll.deltaY,
+          },
+        },
+      ]);
+    });
+  }
+
+  private async dispatchInput(botId: string | undefined, input: ComputerInput): Promise<void> {
     const url = await this.pageSocketUrl(botId);
     if (!url) return;
     const commands: Array<{ method: string; params: Record<string, unknown> }> = [];
     if (input.kind === "pointer") {
-      const params = { x: input.x, y: input.y, button: input.button ?? "left", clickCount: 1 };
+      const button = input.button ?? "left";
+      const clickCount = input.clickCount ?? 1;
+      // A DOM move carries the button that is held, not one that was pressed there, so the
+      // bitmask alone decides whether this is a drag. Without one it is a plain hover.
+      const heldButtons =
+        input.buttons ??
+        (input.type === "down" || input.type === "click" ? (button === "right" ? 2 : 1) : 0);
+      const moveButtons = input.buttons ?? 0;
+      const position = { x: input.x, y: input.y, clickCount };
       if (input.type === "move")
         commands.push({
           method: "Input.dispatchMouseEvent",
-          params: { type: "mouseMoved", ...params, button: "none" },
+          params: {
+            type: "mouseMoved",
+            ...position,
+            button: moveButtons > 0 ? button : "none",
+            buttons: moveButtons,
+          },
         });
       if (input.type === "down" || input.type === "click")
-        commands.push({ method: "Input.dispatchMouseEvent", params: { type: "mousePressed", ...params } });
+        commands.push({
+          method: "Input.dispatchMouseEvent",
+          params: {
+            type: "mousePressed",
+            ...position,
+            button,
+            buttons: heldButtons,
+          },
+        });
       if (input.type === "up" || input.type === "click")
-        commands.push({ method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", ...params } });
+        commands.push({
+          method: "Input.dispatchMouseEvent",
+          params: {
+            type: "mouseReleased",
+            ...position,
+            button,
+            buttons: input.type === "up" ? (input.buttons ?? 0) : 0,
+          },
+        });
     } else if (input.kind === "key") {
-      if (input.key.length === 1) {
-        commands.push({ method: "Input.insertText", params: { text: input.key } });
+      const key = X11_KEY_NAMES[input.key] ?? input.key;
+      const modifiers = modifierMask(input.modifiers);
+      const special = SPECIAL_KEYS[key];
+      if (special) {
+        const base = {
+          key: special.key,
+          code: special.code,
+          windowsVirtualKeyCode: special.virtualKeyCode,
+          nativeVirtualKeyCode: special.virtualKeyCode,
+          modifiers,
+        };
+        commands.push({
+          method: "Input.dispatchKeyEvent",
+          params: {
+            type: "rawKeyDown",
+            ...base,
+            ...(special.text ? { text: special.text, unmodifiedText: special.text } : {}),
+          },
+        });
+        // Empty text on release: the down already inserted it.
+        commands.push({ method: "Input.dispatchKeyEvent", params: { type: "keyUp", ...base } });
+      } else if (key.length === 1) {
+        const code = codeForCharacter(key);
+        commands.push({
+          method: "Input.dispatchKeyEvent",
+          params: {
+            type: "keyDown",
+            key,
+            text: key,
+            unmodifiedText: key,
+            ...(code ? { code } : {}),
+            modifiers,
+          },
+        });
+        commands.push({
+          method: "Input.dispatchKeyEvent",
+          params: { type: "keyUp", key, ...(code ? { code } : {}), modifiers },
+        });
       } else {
-        commands.push({ method: "Input.dispatchKeyEvent", params: { type: "keyDown", key: input.key } });
-        commands.push({ method: "Input.dispatchKeyEvent", params: { type: "keyUp", key: input.key } });
+        // A key Chromium knows but this table does not, such as F5: still press and release it.
+        commands.push({
+          method: "Input.dispatchKeyEvent",
+          params: { type: "rawKeyDown", key, code: key, modifiers },
+        });
+        commands.push({
+          method: "Input.dispatchKeyEvent",
+          params: { type: "keyUp", key, code: key, modifiers },
+        });
       }
     } else {
       commands.push({ method: "Input.insertText", params: { text: input.text } });
@@ -345,9 +552,16 @@ export class NativeBrowser {
   ): Promise<T> {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url, { maxPayload: 32 * 1024 * 1024 });
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
       const timer = setTimeout(() => {
         socket.terminate();
-        reject(new Error("The browser did not answer"));
+        finish(() => reject(new Error("The browser did not answer")));
       }, 5_000);
       const lastId = commands.length;
       socket.on("open", () => {
@@ -362,15 +576,27 @@ export class NativeBrowser {
         } catch {
           return;
         }
+        if (typeof message.id !== "number") return;
+        // Any command failing fails the batch; the last id only says when the batch is done.
+        if (message.error) {
+          finish(() => {
+            socket.close();
+            reject(new Error(message.error?.message ?? "The browser refused it"));
+          });
+          return;
+        }
         if (message.id !== lastId) return;
-        clearTimeout(timer);
-        socket.close();
-        if (message.error) reject(new Error(message.error.message ?? "The browser refused it"));
-        else resolve(message.result as T);
+        finish(() => {
+          socket.close();
+          resolve(message.result as T);
+        });
       });
       socket.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
+        finish(() => reject(error));
+      });
+      // A socket closed before the answer would otherwise leave this promise pending.
+      socket.on("close", () => {
+        finish(() => reject(new Error("The browser connection closed")));
       });
     });
   }

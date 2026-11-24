@@ -403,10 +403,32 @@ export class DesktopSandboxProvider implements SandboxProvider {
     return placeholderObservation(box.screen);
   }
 
-  async act(computer: ComputerRef, request: ComputerActionRequest, _context: AdapterContext) {
+  async act(computer: ComputerRef, request: ComputerActionRequest, context: AdapterContext) {
     const box = this.requiredBox(computer);
     const actions = boundedComputerActions(request.actions);
-    for (const action of actions) applyPlaceholderAction(box, action);
+    for (const action of actions) {
+      // A scroll is real wheel input on the shared page; every other action stays a placeholder
+      // until this provider can drive the host desktop itself.
+      if (this.nativeBrowser && action.kind === "scroll") {
+        const notches =
+          action.amount !== undefined && Number.isFinite(action.amount) && action.amount > 0
+            ? action.amount
+            : 1;
+        const distance = 100 * notches;
+        const deltaX =
+          action.direction === "left" ? -distance : action.direction === "right" ? distance : 0;
+        const deltaY =
+          action.direction === "up" ? -distance : action.direction === "down" ? distance : 0;
+        await this.nativeBrowser.scroll(context.botId ?? computer.botId, {
+          x: action.x,
+          y: action.y,
+          deltaX,
+          deltaY,
+        });
+      } else {
+        applyPlaceholderAction(box, action);
+      }
+    }
     return {
       completed: actions.length,
       ...(request.observe === false ? {} : { observation: await this.observe(computer) }),

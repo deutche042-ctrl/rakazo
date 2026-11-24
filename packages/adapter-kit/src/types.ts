@@ -195,6 +195,10 @@ export type ComputerInput =
       x: number;
       y: number;
       button?: "left" | "right";
+      /** The button bitmask held during the event, so a move can drag instead of hover. */
+      buttons?: number;
+      /** 2 for a double click, so the page sees one rather than two separate clicks. */
+      clickCount?: number;
       type: "move" | "down" | "up" | "click";
     }
   | { kind: "clipboard"; text: string };
