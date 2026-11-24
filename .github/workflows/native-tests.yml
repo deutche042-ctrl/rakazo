@@ -47,7 +47,8 @@ jobs:
             @rakazo/adapters \
             @rakazo/core \
             @rakazo/api \
-            @rakazo/web
+            @rakazo/web \
+            @rakazo/mobile
           do
             echo "::group::check $package"
             pnpm --filter "$package" check

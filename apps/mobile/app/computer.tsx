@@ -36,6 +36,7 @@ import {
   SafeAreaView,
 } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
+import { BrowserLivePanel } from "../components/computers/browser-live-panel";
 import { ComputerKeyboardBar } from "../components/computers/computer-keyboard-bar";
 import { ComputerModePicker } from "../components/computers/computer-mode-picker";
 import { GlassIconButton } from "../components/native/glass-icon-button";
@@ -49,6 +50,7 @@ import {
   embeddableScreenUrl,
   fromScreenPage,
   isProxiedScreenPage,
+  isSharedBrowser,
   nextLoadedScreenUrl,
   retainScreenSource,
   screenPageState,
@@ -100,6 +102,7 @@ export default function Computer() {
     bootComputer,
   } = useComputerBoot(botId);
   const [cleaningUp, setCleaningUp] = useState(false);
+  const [takingControl, setTakingControl] = useState(false);
   const [screenError, setScreenError] = useState<string | null>(null);
   const [screenOriginError, setScreenOriginError] = useState(false);
   const [switchingCount, setSwitchingCount] = useState(0);
@@ -125,9 +128,12 @@ export default function Computer() {
   // and each reload blanked the preview in place of the error.
   const embeddedScreenStream = embeddedScreenUrl ? screenStreamKey(embeddedScreenUrl) : null;
   useEffect(() => setScreenError(null), [embeddedScreenStream]);
+  // A host whose browser stands in for the screen shows its live still, not a desktop WebView.
+  const sharedBrowser = isSharedBrowser(computer);
+  const browserRunning = sharedBrowser && computer?.state === "running";
   // Without a WebView a dropped URL never fails on its own, so say so instead of a dead preview.
   const unreachableScreen =
-    computer?.state === "running" && Boolean(screenUrl) && !embeddedScreenUrl;
+    !sharedBrowser && computer?.state === "running" && Boolean(screenUrl) && !embeddedScreenUrl;
 
   const hasControl =
     computer?.controlHolder === "user" &&
@@ -135,6 +141,8 @@ export default function Computer() {
     !computer.controlledByOther;
   // Propped open like a laptop, the desktop stays above the fold and the keys go below it.
   const tabletop = hasControl ? tabletopLayout(windowSize.width, windowSize.height, folds) : null;
+  // The shared browser has its own key bar under the live still, so it never takes the laptop fold.
+  const keyboardTabletop = sharedBrowser ? null : tabletop;
   const screenVisible =
     computerOpen && computer?.state === "running" && Boolean(embeddedScreenUrl) && !screenError;
   const loadedScreenUrl = nextLoadedScreenUrl(
@@ -186,6 +194,7 @@ export default function Computer() {
     setBootingCount(0);
     setBootFailed(false);
     setSwitchingCount(0);
+    setTakingControl(false);
     setComputerOpen(false);
     autoBooted.current = null;
     if (botId) refreshController.start();
@@ -300,7 +309,8 @@ export default function Computer() {
   );
 
   useEffect(() => {
-    if (!computerOpen) return;
+    // The shared browser reads its own frames; there is no WebView to reload after a return.
+    if (!computerOpen || sharedBrowser) return;
     let backgrounded = false;
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "background") backgrounded = true;
@@ -309,7 +319,7 @@ export default function Computer() {
       void reloadScreen();
     });
     return () => subscription.remove();
-  }, [computerOpen, reloadScreen]);
+  }, [computerOpen, sharedBrowser, reloadScreen]);
 
   useEffect(() => {
     if (!botId || !foreground || computer?.state !== "running") return;
@@ -359,6 +369,44 @@ export default function Computer() {
     }
   }
 
+  /** The shared browser is already running, so control is the takeover alone, with no boot. */
+  async function takeBrowserControl() {
+    if (!botId || !refreshController.isActive()) return false;
+    const action = refreshController.beginAction();
+    setTakingControl(true);
+    setError(null);
+    try {
+      await rpc("computer/takeover", { botId }).catch(async (err: unknown) => {
+        if (!(err instanceof Error && err.name === "TimeoutError")) throw err;
+        // The server may have granted control after the app stopped waiting: ask what it holds.
+        const status = await rpc("computer/status", { botId });
+        if (!status.controlLeaseId) throw err;
+      });
+      if (!action.isActive()) return false;
+      await action.refresh();
+      return action.isActive();
+    } catch (err) {
+      if (!action.isActive()) return false;
+      setError(errorText(err, t`Could not take control`));
+      return false;
+    } finally {
+      setTakingControl(false);
+      action.finish();
+    }
+  }
+
+  async function openBrowser({ takeControl }: { takeControl: boolean }) {
+    // A status that moved on since the tap needs the boot path, not a takeover of a dead page.
+    if (computer?.state !== "running") {
+      await openComputer({ takeControl });
+      return;
+    }
+    if (takeControl && !hasControl && !(await takeBrowserControl())) return;
+    if (!botId || !refreshController.isActive()) return;
+    setComputerOpen(true);
+    setScreenError(null);
+  }
+
   function dismissDiskWarning() {
     setComputer((current) => current && { ...current, diskFullPercent: undefined });
     void rpc("computer/dismissDiskWarning", { botId: botId ?? "" }).catch(() => undefined);
@@ -388,6 +436,30 @@ export default function Computer() {
       await rpc("computer/release", { botId, reason });
       if (!action.isActive()) return;
       setComputerOpen(false);
+      await action.refresh().catch(() => undefined);
+    } catch {
+      if (action.isActive()) {
+        setScreenOriginError(false);
+        setScreenError(t`Could not continue`);
+      }
+    } finally {
+      setReleasing(false);
+      action.finish();
+    }
+  }
+
+  /** Hand the shared browser back but keep watching it; the page only closes with the window. */
+  async function releaseBrowserControl(reason?: ComputerReleaseReason) {
+    if (!botId || !refreshController.isActive()) return;
+    const action = refreshController.beginAction();
+    setReleasing(true);
+    try {
+      await rpc("computer/release", {
+        botId,
+        reason,
+        leaseId: computer?.controlLeaseId,
+      });
+      if (!action.isActive()) return;
       await action.refresh().catch(() => undefined);
     } catch {
       if (action.isActive()) {
@@ -447,8 +519,9 @@ export default function Computer() {
   const allowanceUsed = computer?.state !== "running" && isComputerAllowanceUsed(error);
   const canRetry = !allowanceUsed && !bootPending && (bootFailed || computer?.state === "error");
   const screenRetry =
-    unreachableScreen ||
-    (computer?.state === "running" && screenOriginError && Boolean(screenError));
+    !sharedBrowser &&
+    (unreachableScreen ||
+      (computer?.state === "running" && screenOriginError && Boolean(screenError)));
   const retryScreenAction = screenRetry ? (
     <NativeActionButton
       style={{ marginBottom: 16 }}
@@ -525,6 +598,16 @@ export default function Computer() {
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
             <Text style={{ color: tokens.mutedForeground }}>{t`Open in full window`}</Text>
           </View>
+        ) : browserRunning ? (
+          <BrowserLivePanel
+            botId={botId}
+            enabled={!computerOpen}
+            tabs={computer?.browserTabs}
+            onForbidden={() => void refresh().catch(() => undefined)}
+            style={{ flex: 1 }}
+            frameStyle={{ flex: 1 }}
+            testID="computer-browser-preview"
+          />
         ) : foreground && computer?.state === "running" && embeddedScreenUrl && !screenError ? (
           <ScreenWebView
             key={screenReload}
@@ -562,7 +645,11 @@ export default function Computer() {
           accessibilityLabel={bootPending ? placeholder : t`Open computer`}
           accessibilityState={{ disabled: bootPending, busy: bootPending }}
           disabled={bootPending}
-          onPress={() => void openComputer({ takeControl: false })}
+          onPress={() =>
+            void (browserRunning
+              ? openBrowser({ takeControl: false })
+              : openComputer({ takeControl: false }))
+          }
           style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
         />
       </View>
@@ -586,15 +673,19 @@ export default function Computer() {
         {hasControl ? (
           <ComputerReleaseActions
             takeoverRequested={computer?.takeoverRequested ?? false}
-            onRelease={releaseComputer}
+            onRelease={sharedBrowser ? releaseBrowserControl : releaseComputer}
           />
         ) : (
           <NativeActionButton
             label={t`Take control`}
             prominence="secondary"
-            disabled={bootPending}
+            disabled={bootPending || takingControl}
             style={{ alignSelf: "center" }}
-            onPress={() => void openComputer({ takeControl: true })}
+            onPress={() =>
+              void (browserRunning
+                ? openBrowser({ takeControl: true })
+                : openComputer({ takeControl: true }))
+            }
           />
         )}
       </View>
@@ -639,7 +730,7 @@ export default function Computer() {
         <SafeAreaProvider initialMetrics={initialWindowMetrics}>
           <KeyboardAvoidingView
             behavior="height"
-            enabled={!tabletop}
+            enabled={!keyboardTabletop}
             style={{ flex: 1, backgroundColor: tokens.background }}
           >
             <SafeAreaView
@@ -680,18 +771,21 @@ export default function Computer() {
                 {hasControl ? (
                   <ComputerReleaseActions
                     takeoverRequested={computer?.takeoverRequested ?? false}
-                    onRelease={releaseComputer}
+                    onRelease={sharedBrowser ? releaseBrowserControl : releaseComputer}
                   />
                 ) : (
                   <NativeActionButton
                     label={t`Take control`}
                     prominence="secondary"
                     fill={false}
+                    busy={takingControl}
                     style={{ alignSelf: "center" }}
                     onPress={() =>
-                      void bootComputer({ takeControl: true, showProgress: false }).catch(
-                        () => undefined,
-                      )
+                      void (browserRunning
+                        ? takeBrowserControl()
+                        : bootComputer({ takeControl: true, showProgress: false }).catch(
+                            () => undefined,
+                          ))
                     }
                   />
                 )}
@@ -714,7 +808,19 @@ export default function Computer() {
               </Text>
             ) : null}
             <View style={{ flex: 1, backgroundColor: tokens.card }}>
-              {foreground && loadedScreenUrl ? (
+              {browserRunning ? (
+                <BrowserLivePanel
+                  botId={botId}
+                  enabled={computerOpen}
+                  interactive={hasControl}
+                  tabs={computer?.browserTabs}
+                  onForbidden={() => void refresh().catch(() => undefined)}
+                  insetBottom
+                  style={{ flex: 1 }}
+                  frameStyle={{ flex: 1 }}
+                  testID="computer-shared-browser-live"
+                />
+              ) : foreground && loadedScreenUrl ? (
                 <ScreenWebView
                   key={screenReload}
                   url={loadedScreenUrl}
@@ -749,9 +855,14 @@ export default function Computer() {
                 </View>
               )}
             </View>
-            {tabletop ? (
+            {keyboardTabletop ? (
               // A fixed lower half, so the keyboard lifts the bar without pushing the desktop.
-              <View style={{ height: windowSize.height - tabletop.top, paddingTop: tabletop.gap }}>
+              <View
+                style={{
+                  height: windowSize.height - keyboardTabletop.top,
+                  paddingTop: keyboardTabletop.gap,
+                }}
+              >
                 <KeyboardAvoidingView
                   behavior="height"
                   style={{ flex: 1, justifyContent: "flex-end" }}
@@ -759,7 +870,7 @@ export default function Computer() {
                   {keyboardBar}
                 </KeyboardAvoidingView>
               </View>
-            ) : (
+            ) : sharedBrowser ? null : (
               keyboardBar
             )}
           </KeyboardAvoidingView>

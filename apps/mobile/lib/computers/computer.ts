@@ -171,6 +171,23 @@ export function nextLoadedScreenUrl(
   return retainScreenSource(held, next, now);
 }
 
+/**
+ * Whether this computer's host runs one shared browser that stands in for its screen. Those
+ * computers show the browser's live still and its tabs instead of a remote-desktop WebView.
+ */
+export function isSharedBrowser(
+  computer:
+    | Pick<ComputerStatus, "kind" | "runsOnUserMachine" | "browserAvailable">
+    | null
+    | undefined,
+): boolean {
+  if (!computer) return false;
+  if (computer.browserAvailable === true) return true;
+  // A host from before the flag says so only by its kind.
+  if (computer.browserAvailable === false) return false;
+  return computer.runsOnUserMachine ?? (computer.kind === "desktop");
+}
+
 export function controlLabel(computer: ComputerStatus | null, name: string) {
   if (computer?.busyBotName) return t`${ph({ name: computer.busyBotName })} is using it`;
   if (computer?.state === "suspended") return t`Asleep`;
