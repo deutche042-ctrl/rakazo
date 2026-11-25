@@ -48,7 +48,6 @@ packages/i18n/locales/**/*.mjs
 packages/i18n/locales/**/*.js
 # Every string in the source, extracted before each production build
 packages/i18n/locales/messages.pot
-apps/web/scripts/msgids.json
 playwright-report-www
 
 # Downloaded embedded computer screen SDK files
