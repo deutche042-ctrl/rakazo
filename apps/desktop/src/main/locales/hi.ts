@@ -211,11 +211,6 @@ export const HI_MESSAGES: Record<string, string> = {
   "Rakazo needs Docker Desktop to run on this computer.":
     "इस कंप्यूटर पर चलने के लिए Rakazo को Docker Desktop चाहिए।",
   "Rakazo needs Docker to run on this computer.": "इस कंप्यूटर पर चलने के लिए Rakazo को Docker चाहिए।",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop एक मुफ़्त ऐप है जो Rakazo को बैकग्राउंड में चलाता है। इसे इंस्टॉल करें और एक बार खोलें।",
-  "Install Docker Engine and start it.": "Docker Engine इंस्टॉल करके शुरू करें।",
-  "Download Docker Desktop": "Docker Desktop डाउनलोड करें",
-  "Install Docker": "Docker इंस्टॉल करें",
   "Docker is installed but not running. Open it to continue.":
     "Docker इंस्टॉल है लेकिन चल नहीं रहा। जारी रखने के लिए इसे खोलें।",
   "Starting {app}…": "{app} शुरू हो रहा है…",

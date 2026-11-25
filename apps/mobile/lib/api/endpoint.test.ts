@@ -36,6 +36,46 @@ describe("normalizeApiBase", () => {
     });
   });
 
+  it("keeps plain http for a typed local host and uses https everywhere else", () => {
+    expect(normalizeApiBase("192.168.1.10:3100")).toEqual({
+      ok: true,
+      url: "http://192.168.1.10:3100",
+    });
+    expect(normalizeApiBase("127.0.0.1:3100")).toEqual({ ok: true, url: "http://127.0.0.1:3100" });
+    expect(normalizeApiBase("localhost:3100")).toEqual({ ok: true, url: "http://localhost:3100" });
+    expect(normalizeApiBase("10.0.0.8")).toEqual({ ok: true, url: "http://10.0.0.8" });
+    expect(normalizeApiBase("app.example.com")).toEqual({
+      ok: true,
+      url: "https://app.example.com",
+    });
+    // Link-local is not this network, so a typed metadata address does not become plain http.
+    expect(normalizeApiBase("169.254.169.254:80")).toEqual({
+      ok: true,
+      url: "https://169.254.169.254:80",
+    });
+  });
+
+  it("accepts a live tunnel link pasted as-is and keeps it on https", () => {
+    expect(normalizeApiBase("  https://quiet-river-1234.trycloudflare.com/  ")).toEqual({
+      ok: true,
+      url: "https://quiet-river-1234.trycloudflare.com",
+    });
+    // The link is often copied without its scheme; a public tunnel host still gets https.
+    expect(normalizeApiBase("quiet-river-1234.trycloudflare.com")).toEqual({
+      ok: true,
+      url: "https://quiet-river-1234.trycloudflare.com",
+    });
+    expect(normalizeApiBase("https://quiet-river-1234.trycloudflare.com/rpc/health")).toEqual({
+      ok: true,
+      url: "https://quiet-river-1234.trycloudflare.com",
+    });
+    // An explicit https origin is never downgraded, even when the host looks local.
+    expect(normalizeApiBase("https://localhost:3100")).toEqual({
+      ok: true,
+      url: "https://localhost:3100",
+    });
+  });
+
   it("rejects empty, non-http, and malformed values", () => {
     expect(normalizeApiBase("")).toMatchObject({ ok: false });
     expect(normalizeApiBase("   ")).toMatchObject({ ok: false });
@@ -132,6 +172,20 @@ describe("probeApiBase", () => {
     });
   });
 
+  it("names a tunnel that refuses the request before Rakazo answers", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 403 }),
+    ) as unknown as typeof fetch;
+
+    await expect(probeApiBase("https://quiet-river.trycloudflare.com", fetchImpl)).resolves.toEqual(
+      {
+        ok: false,
+        reason: "refused",
+        error: "The server refused the request. Check its access headers and that it is running.",
+      },
+    );
+  });
+
   it("rejects an oversized health response", async () => {
     const fetchImpl = vi.fn(
       async () =>
@@ -140,9 +194,10 @@ describe("probeApiBase", () => {
         }),
     ) as unknown as typeof fetch;
 
-    await expect(probeApiBase("https://app.example.com", fetchImpl)).resolves.toMatchObject({
+    await expect(probeApiBase("https://app.example.com", fetchImpl)).resolves.toEqual({
       ok: false,
-      error: "Could not reach that server",
+      reason: "not-rakazo",
+      error: "That URL did not look like a Rakazo server",
     });
   });
 
@@ -155,9 +210,10 @@ describe("probeApiBase", () => {
     const pending = probeApiBase("https://app.example.com", fetchImpl as typeof fetch);
     await vi.advanceTimersByTimeAsync(API_PROBE_TIMEOUT_MS);
 
-    await expect(pending).resolves.toMatchObject({
+    await expect(pending).resolves.toEqual({
       ok: false,
-      error: "Could not reach that server",
+      reason: "timeout",
+      error: "The server did not answer in time. Check it is running, then try again.",
     });
     expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   });
@@ -170,10 +226,71 @@ describe("probeApiBase", () => {
     const pending = probeApiBase("https://app.example.com", fetchImpl as typeof fetch);
     await vi.advanceTimersByTimeAsync(API_PROBE_TIMEOUT_MS);
 
-    await expect(pending).resolves.toMatchObject({
+    await expect(pending).resolves.toEqual({
       ok: false,
-      error: "Could not reach that server",
+      reason: "timeout",
+      error: "The server did not answer in time. Check it is running, then try again.",
     });
     expect(cancel).toHaveBeenCalledOnce();
   });
+
+  it("names a certificate the phone will not trust", async () => {
+    const fetchImpl = rejectedFetch(
+      Object.assign(new TypeError("Network request failed"), {
+        cause: new Error("The certificate for this server is invalid."),
+      }),
+    );
+
+    await expect(probeApiBase("https://quiet-river.trycloudflare.com", fetchImpl)).resolves.toEqual(
+      {
+        ok: false,
+        reason: "certificate",
+        error: "The server’s certificate could not be verified. Check the address, then try again.",
+      },
+    );
+  });
+
+  it("names a tunnel host the phone cannot resolve", async () => {
+    const fetchImpl = rejectedFetch(
+      Object.assign(new TypeError("Network request failed"), {
+        cause: new Error("getaddrinfo ENOTFOUND quiet-river.trycloudflare.com"),
+      }),
+    );
+
+    await expect(probeApiBase("https://quiet-river.trycloudflare.com", fetchImpl)).resolves.toEqual(
+      {
+        ok: false,
+        reason: "dns",
+        error: "That address could not be found. Check it and try again.",
+      },
+    );
+  });
+
+  it("names a refused local server", async () => {
+    const fetchImpl = rejectedFetch(new Error("connect ECONNREFUSED 192.168.1.10:3100"));
+
+    await expect(probeApiBase("http://192.168.1.10:3100", fetchImpl)).resolves.toEqual({
+      ok: false,
+      reason: "refused",
+      error: "The server refused the connection. Check it is running and the address is right.",
+    });
+  });
+
+  it("falls back to an unreachable message with no cause detail", async () => {
+    const fetchImpl = rejectedFetch(new TypeError("Network request failed"));
+
+    await expect(probeApiBase("https://quiet-river.trycloudflare.com", fetchImpl)).resolves.toEqual(
+      {
+        ok: false,
+        reason: "unreachable",
+        error: "Could not reach that server",
+      },
+    );
+  });
 });
+
+function rejectedFetch(error: unknown): typeof fetch {
+  return vi.fn(async () => {
+    throw error;
+  }) as unknown as typeof fetch;
+}

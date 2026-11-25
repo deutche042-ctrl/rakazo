@@ -19,6 +19,11 @@
 // RAKAZO_DEV_TAILNET=1 also serves the web app over HTTPS to your other Tailscale devices, at
 // https://<this machine>.<tailnet>.ts.net:<web port>. Everything still listens on loopback; the
 // Tailscale daemon forwards to it, so only devices signed in to your tailnet can reach it.
+//
+// RAKAZO_DEV_TUNNEL=1 starts scripts/native/tunnel.sh with the stack and prints its public
+// https://<words>.trycloudflare.com link. Anyone with that link can reach the server while it
+// runs, so this is off unless asked for; the tunnel state and log are the same ones the Live
+// link settings read.
 import { execFileSync, spawn } from "node:child_process";
 import {
   appendFileSync,
@@ -530,6 +535,72 @@ function shareOnTailnet(webPort) {
   };
 }
 
+const TUNNEL_START_TIMEOUT_MS = 35_000;
+
+function readJsonFile(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Starts scripts/native/tunnel.sh on this checkout's web port and waits for its public URL.
+ * The script owns cloudflared and writes status.json/live-link.json, so Settings > Live link and
+ * the phone see the same tunnel this process started. A tunnel that is already running is reused
+ * and left alone: stopping it stays a deliberate act (Settings, stop.sh, Ctrl+C here only for the
+ * one this process owns).
+ */
+async function shareOverTunnel(webPort) {
+  const script = path.join(root, "scripts/native/tunnel.sh");
+  if (!existsSync(script)) {
+    log("RAKAZO_DEV_TUNNEL is set, but scripts/native/tunnel.sh is missing.");
+    return null;
+  }
+  // tunnel.sh reads the same variable through `env`; this only finds its file first.
+  const stateDir =
+    // biome-ignore lint/suspicious/noUndeclaredEnvVars: not a turbo input
+    process.env.RAKAZO_NATIVE_STATE_DIR?.trim() ||
+    path.join(os.homedir(), ".local", "share", "rakazo-native");
+  const statusFile = path.join(stateDir, "status.json");
+  const linkFile = path.join(stateDir, "live-link.json");
+
+  const running = readJsonFile(statusFile);
+  if (running?.state === "running" && Number.isInteger(running.pid)) {
+    const link = readJsonFile(linkFile);
+    if (typeof link?.url === "string" && link.url) return { url: link.url, child: null };
+    log("A live link is already running; its URL is not readable, see Settings > Live link.");
+    return null;
+  }
+  // A previous run's link would be read as this one's; tunnel.sh refuses to overwrite a live one.
+  rmSync(linkFile, { force: true });
+
+  const child = spawn("bash", [script], {
+    cwd: root,
+    stdio: "inherit",
+    // The port this checkout actually chose, not whatever .env says: another worktree may hold
+    // the default block, and the tunnel must point at this one.
+    env: { ...env, WEB_PORT: String(webPort) },
+  });
+  child.once("error", (error) => log(`Live link could not start: ${error.message}`));
+  // Ctrl+C, a signal sent to this process, or a crash take the link down with the stack;
+  // tunnel.sh's trap closes cloudflared and writes `stopped`.
+  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+  process.on("exit", () => child.kill("SIGTERM"));
+
+  const deadline = Date.now() + TUNNEL_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) break;
+    const link = readJsonFile(linkFile);
+    if (typeof link?.url === "string" && link.url) return { url: link.url, child };
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  // tunnel.sh has already printed why (a missing cloudflared, a refused tunnel); say where to look.
+  log("The live link did not report a URL; run bash scripts/native/tunnel.sh to see why.");
+  return null;
+}
+
 function generateClientIfStale(env) {
   const client = path.join(dbPackage, "src/generated/prisma/client.ts");
   const schema = path.join(dbPackage, "prisma/schema.prisma");
@@ -584,10 +655,14 @@ try {
 
 let tailnet = null;
 if (/^(1|true)$/i.test(setting("RAKAZO_DEV_TAILNET") ?? "")) {
-  // The emulator's inbox has no sign-in check; it is safe only while nothing but this machine
-  // can reach the web server.
+  // The emulator's inbox has no sign-in check, and /api/dev/emails answers loopback only, so it
+  // stays on this machine even when the web app is shared. Warn instead of refusing to boot: a
+  // tailnet that cannot start would otherwise leave every later run failing over a stale flag.
   if (setting("EMAIL_EMULATOR") === "true") {
-    throw new Error("RAKAZO_DEV_TAILNET cannot be used with EMAIL_EMULATOR=true.");
+    log(
+      "EMAIL_EMULATOR=true with RAKAZO_DEV_TAILNET=1: the development inbox stays loopback-only; " +
+        "other devices sign in with a password.",
+    );
   }
   tailnet = shareOnTailnet(Number(env.WEB_PORT ?? setting("WEB_PORT") ?? 5173));
   // Every way this process ends, including a failed launch, turns sharing off.
@@ -600,8 +675,26 @@ if (/^(1|true)$/i.test(setting("RAKAZO_DEV_TAILNET") ?? "")) {
     .join(",");
 }
 
+// Opt-in: the same quick tunnel scripts/native/tunnel.sh runs by hand, started with the stack so
+// the link exists from the first second and Settings > Live link has something to show. Off by
+// default: publishing this checkout to the internet is a deliberate act, not a side effect.
+let liveLink = null;
+if (/^(1|true)$/i.test(setting("RAKAZO_DEV_TUNNEL") ?? "")) {
+  liveLink = await shareOverTunnel(Number(env.WEB_PORT ?? setting("WEB_PORT") ?? 5173));
+  if (liveLink) {
+    // The quick tunnel's host is new on every run, so it cannot be listed in .env beforehand.
+    // Without it, another device's browser is refused at sign-in with 403 INVALID_ORIGIN.
+    env.RAKAZO_EXTRA_AUTH_ORIGINS = [setting("RAKAZO_EXTRA_AUTH_ORIGINS"), liveLink.url]
+      .filter(Boolean)
+      .join(",");
+  }
+}
+
 if (tailnet) log(`Open ${tailnet.origin} from any device on your tailnet`);
-else if (ports) log(`Open http://127.0.0.1:${ports.web}`);
+// Passkeys are bound to the `localhost` origin (the API's rpID), so the loopback IP would offer a
+// sign-in page whose passkeys cannot work. The server listens on 127.0.0.1 either way.
+else if (ports) log(`Open http://localhost:${ports.web}`);
+if (liveLink) log(`Live link, open from anywhere: ${liveLink.url}`);
 // A native host provider never uses the in-stack supervisor, which needs Docker only to exist.
 const provider = (setting("SANDBOX_PROVIDER") ?? "").trim().toLowerCase();
 const services =

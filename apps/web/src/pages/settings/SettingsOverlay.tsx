@@ -42,6 +42,7 @@ import {
 } from "./AccountSettingsOverlay";
 import { BillingSettingsPanel } from "./BillingSettingsPanel";
 import { LabsSettingsPanel } from "./LabsSettingsPanel";
+import { LiveLinkSettingsPanel } from "./LiveLinkSettingsPanel";
 import { MemorySettingsOverlay } from "./MemorySettingsOverlay";
 import { MessagingSettingsPanel } from "./MessagingSettingsPanel";
 import type { OrganizationPage } from "./OrganizationSettingsPanel";
@@ -158,6 +159,8 @@ export function SettingsOverlay({
     thisComputer !== null ||
     plainHttp;
   const showUpdates = Boolean(desktopBridge()?.update);
+  // The live link is a development-only page: its API exists on the native stack, not in a build.
+  const showLiveLink = import.meta.env.DEV;
   // A section that isn't available yet (billing before its flag loads) shows General until it is.
   const section =
     (requestedSection === "computer" && !showComputer) ||
@@ -165,6 +168,7 @@ export function SettingsOverlay({
     (requestedSection === "messaging" && !messagingEnabled) ||
     (requestedSection === "wallet" && !paymentWalletProvider) ||
     (requestedSection === "updates" && !showUpdates) ||
+    (requestedSection === "live-link" && !showLiveLink) ||
     (requestedSection === "labs" && labsAvailable.length === 0)
       ? "general"
       : requestedSection;
@@ -195,6 +199,7 @@ export function SettingsOverlay({
     billing: billingEnabled,
     updates: showUpdates,
     labs: labsAvailable.length > 0,
+    dev: showLiveLink,
   });
 
   const measureNav = () => {
@@ -494,6 +499,7 @@ export function SettingsOverlay({
                     <BillingSettingsPanel client={shellRpc} />
                   ) : null}
                   {section === "updates" && showUpdates ? <UpdatesSettingsPanel /> : null}
+                  {section === "live-link" && showLiveLink ? <LiveLinkSettingsPanel /> : null}
                   {section === "models" ? (
                     <ModelSettingsOverlay embedded scope="account" onClose={requestClose} />
                   ) : null}

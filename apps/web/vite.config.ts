@@ -34,6 +34,12 @@ export default defineConfig(({ command, mode }) => {
     createServiceLogger({ service: "rakazo-web" }),
   );
   const { api, allowedHosts, appPolicy, instanceTheme } = settings;
+  // A Cloudflare quick tunnel (scripts/native/tunnel.sh) reaches the dev server with its own
+  // random <words>.trycloudflare.com Host. Vite answers 403 for any host it does not know, for the
+  // page and the /api proxy alike, so the link would open nothing. A leading dot allows that whole
+  // suffix. Only the dev server gets it: the tunnel points at the dev port, and the preview server
+  // behind a real deployment keeps the exact list from RAKAZO_HOST/RAKAZO_ALLOWED_HOSTS.
+  const devAllowedHosts = [...allowedHosts, ".trycloudflare.com"];
   // Set by the server built from this config; reusing one config object for two servers would
   // leave the last one's list.
   let proxyHosts: readonly string[] | true = [];
@@ -129,7 +135,7 @@ export default defineConfig(({ command, mode }) => {
       host: process.env.RAKAZO_DEV_HOST ?? rootEnv.RAKAZO_DEV_HOST ?? "127.0.0.1",
       port: webPort,
       strictPort: true,
-      allowedHosts,
+      allowedHosts: devAllowedHosts,
       proxy,
     },
     preview: {

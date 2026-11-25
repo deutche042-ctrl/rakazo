@@ -1,16 +1,26 @@
 import { useLingui } from "@lingui/react/macro";
 import type { ModelHeaderRow } from "@rakazo/contracts";
 import { serverHeadersFromRows } from "@rakazo/contracts";
-import { Stack, useRouter } from "expo-router";
-import { useContext, useEffect, useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput } from "react-native";
+import * as Clipboard from "expo-clipboard";
+import { Stack, useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import {
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Share,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HeaderRowsEditor } from "../components/integrations/header-rows-editor";
 import { NativeActionButton } from "../components/native/native-action-button";
+import { NativeSymbol } from "../components/native/native-symbol";
 import { cancelHeaderOptions, trailingHeaderOptions } from "../components/native/sheet-header";
 import { SettingsGroup, SettingsRow } from "../components/settings/settings-group";
 import { LongPressMenu } from "../components/ui/long-press-menu";
-import { currentApiBase } from "../lib/api/api";
+import { authHeaders, currentApiBase } from "../lib/api/api";
 import { resetApiBase, saveApiBase } from "../lib/api/api-server";
 import {
   apiBaseWarning,
@@ -20,6 +30,13 @@ import {
   probeApiBase,
   usesCustomApiBase,
 } from "../lib/api/endpoint";
+import {
+  formatUptime,
+  LIVE_LINK_REFRESH_MS,
+  liveLinkHost,
+  liveLinkTone,
+  readLiveLink,
+} from "../lib/api/live-link";
 import type { SavedServer } from "../lib/api/saved-servers";
 import { removeSavedServer, savedServers } from "../lib/api/saved-servers";
 import { serverHeaders } from "../lib/api/server-headers";
@@ -28,6 +45,8 @@ import { CallKeyboardContext } from "../lib/calls/call-keyboard-context";
 import { useSideInsets } from "../lib/layout/side-insets";
 import { announceToScreenReader } from "../lib/native/announce";
 import { useMobileTokens, useResolvedAppearance } from "../lib/native/native";
+import { useForegroundPoll } from "../lib/query/foreground-poll";
+import { useScreenQuery } from "../lib/query/screen-query";
 import { confirmUnsentSendLoss } from "../lib/thread/send/unsent-send-warning";
 
 export default function ServerScreen() {
@@ -44,6 +63,8 @@ export default function ServerScreen() {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [saved, setSaved] = useState(savedServers);
+  const [onScreen, setOnScreen] = useState(false);
+  const [liveLinkNote, setLiveLinkNote] = useState<string | null>(null);
   const colorScheme = useResolvedAppearance();
   const active = useRef(true);
   const saving = useRef(false);
@@ -54,6 +75,51 @@ export default function ServerScreen() {
       active.current = false;
     };
   }, []);
+
+  // The live link is read while this screen is on top. Leaving it disables the query and stops
+  // the poll, so a phone in a pocket does not keep asking the server about its tunnel.
+  useFocusEffect(
+    useCallback(() => {
+      setOnScreen(true);
+      setLiveLinkNote(null);
+      return () => setOnScreen(false);
+    }, []),
+  );
+
+  const liveLink = useScreenQuery(
+    {
+      queryKey: ["live-link", current],
+      queryFn: async ({ signal }) => {
+        const headers = { ...serverHeaders(current), ...(await authHeaders()) };
+        return readLiveLink({ base: current, headers, signal });
+      },
+    },
+    { enabled: onScreen },
+  );
+  // One poll at a time, only while the screen and the app are both visible.
+  useForegroundPoll(
+    () => liveLink.refetch({ cancelRefetch: false }),
+    LIVE_LINK_REFRESH_MS,
+    onScreen,
+  );
+
+  async function copyLiveLink(url: string) {
+    try {
+      await Clipboard.setStringAsync(url);
+      const message = t`Link copied`;
+      setLiveLinkNote(message);
+      announceToScreenReader(message);
+    } catch {
+      const message = t`Could not copy the link`;
+      setLiveLinkNote(message);
+      announceToScreenReader(message);
+    }
+  }
+
+  async function shareLiveLink(url: string) {
+    // A dismissed share sheet resolves without sharing, and is not an error worth a message.
+    await Share.share({ message: url }).catch(() => undefined);
+  }
 
   function close() {
     if (!active.current) return;
@@ -70,6 +136,38 @@ export default function ServerScreen() {
 
   const parsedDraft = normalizeApiBase(draft);
   const warning = parsedDraft.ok ? apiBaseWarning(parsedDraft.url) : null;
+
+  // The same four states and lamp colors as Settings > Live link on the web. The phone shows the
+  // link, copies it and shares it; stopping the tunnel and reading its log stay on the machine.
+  const liveView = liveLink.data ?? null;
+  const liveLabel = !liveView
+    ? ""
+    : liveView.state === "running"
+      ? t`Running`
+      : liveView.state === "error"
+        ? t`Problem`
+        : liveView.state === "stopped"
+          ? t`Stopped`
+          : t`Off`;
+  const liveTone = liveView ? liveLinkTone(liveView.state) : null;
+  const liveColor =
+    liveTone === "success"
+      ? tokens.success
+      : liveTone === "warning"
+        ? tokens.warning
+        : tokens.destructive;
+  const liveTitle =
+    liveView?.state === "running" && liveView.uptimeSeconds !== null
+      ? `${liveLabel} · ${formatUptime(liveView.uptimeSeconds)}`
+      : liveLabel;
+  const liveHost = liveView ? liveLinkHost(liveView.url) : null;
+  const liveDetail = !liveView
+    ? undefined
+    : liveView.state === "running"
+      ? (liveView.url ?? undefined)
+      : liveView.state === "error"
+        ? (liveView.lastError ?? t`The tunnel is not running.`)
+        : t`Start it with bash scripts/native/tunnel.sh.`;
 
   // A saved server brings the headers it was set up with; typing an address uses the rows.
   async function save(target?: SavedServer) {
@@ -211,6 +309,83 @@ export default function ServerScreen() {
           {error ? (
             <Text accessibilityRole="alert" style={{ color: tokens.destructive, marginTop: 12 }}>
               {error}
+            </Text>
+          ) : null}
+          {liveView ? (
+            <SettingsGroup
+              label={t`Live link`}
+              footer={
+                liveView.state === "running"
+                  ? t`Anyone who has the link can open this server.`
+                  : undefined
+              }
+            >
+              <SettingsRow
+                accessible
+                accessibilityLabel={t`Live link`}
+                accessibilityValue={{ text: liveTitle }}
+                title={liveTitle}
+                detail={liveDetail}
+                value={liveHost ?? undefined}
+                leading={
+                  <View
+                    accessibilityElementsHidden
+                    importantForAccessibility="no-hide-descendants"
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: 5,
+                      backgroundColor: liveColor,
+                    }}
+                  />
+                }
+              />
+              {liveView.url ? (
+                <SettingsRow
+                  accessibilityRole="button"
+                  title={t`Copy link`}
+                  leading={
+                    <NativeSymbol
+                      ios="doc.on.doc"
+                      android="copy-outline"
+                      color={tokens.mutedForeground}
+                    />
+                  }
+                  onPress={() => {
+                    const link = liveView.url;
+                    if (link) void copyLiveLink(link);
+                  }}
+                />
+              ) : null}
+              {liveView.url ? (
+                <SettingsRow
+                  accessibilityRole="button"
+                  title={t`Share link`}
+                  leading={
+                    <NativeSymbol
+                      ios="square.and.arrow.up"
+                      android="share-social-outline"
+                      color={tokens.mutedForeground}
+                    />
+                  }
+                  onPress={() => {
+                    const link = liveView.url;
+                    if (link) void shareLiveLink(link);
+                  }}
+                />
+              ) : null}
+            </SettingsGroup>
+          ) : null}
+          {liveLinkNote ? (
+            <Text
+              style={{
+                color: tokens.mutedForeground,
+                marginTop: 8,
+                paddingHorizontal: 16,
+                fontSize: 13,
+              }}
+            >
+              {liveLinkNote}
             </Text>
           ) : null}
           <SettingsGroup label={t`Recent servers`}>

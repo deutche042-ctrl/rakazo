@@ -46,6 +46,10 @@ The **+** in **Integrations** adds tools that aren't in the catalog:
 - **MCP server**: any remote MCP server at an HTTPS address. **Browse MCP servers** searches a public
   directory of them. A self-hosted server can also run local (stdio) MCP servers, which an admin
   adds; see [Tools and integrations](./self-host-integrations.md).
+  On a native (no Docker) install the shared Chromium can be offered to bots through browse. The
+  installer stages the extension (or stops and prints the one store step when it cannot download
+  it) and writes the policy; an admin then adds the stdio server once, named exactly `browse`; see
+  [The shared browser and browse](./native-browser.md).
 - **OpenAPI** and **GraphQL**: point at an API's description and the bot can call it.
 - **Executor**: a tool gateway you sign in to with your Executor account. For a self-hosted
   Executor, change the URL to its own `/mcp` address.

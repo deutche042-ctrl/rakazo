@@ -3,6 +3,7 @@ import { modelRoleConnectionId } from "@rakazo/contracts";
 import { BACKGROUND_HELPER_TRIGGER, redactSecrets } from "@rakazo/core";
 import { isDatabaseUnavailable, recordUsage } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { browseMcpOffered } from "../../browse/browse-instructions.js";
 import { isStrategicInitiativeRun } from "../../routines/strategic-initiative.js";
 import { personSpeaker } from "../../runtime/context/history-speakers.js";
 import { backgroundHelpersAllowed } from "../../tasks/background-helpers.js";
@@ -133,6 +134,9 @@ function modelTurnRequest(
     userComputer,
   } = turn.capabilities;
   const { strategicBuiltins, taskCatalogInstruction, tools, unavailableToolReasons } = turn.tools;
+  // The connector names MCP tools `mcp__<slug>__<tool>`, so the main browse tool says whether
+  // this run was given the browse server.
+  const browseMcp = browseMcpOffered(tools.map((tool) => tool.name));
   const { computerInstruction, workspaceInstruction } = turn.computerInstructions;
   const {
     agentSkillsLine,
@@ -226,6 +230,7 @@ function modelTurnRequest(
       historyMyChats: ctx.source.myChatsAllowed,
       computerInstruction,
       pageBrowserAllowed,
+      browseMcp,
       taskCatalogInstruction,
       workspaceInstruction,
       agentEnvironmentInstruction,

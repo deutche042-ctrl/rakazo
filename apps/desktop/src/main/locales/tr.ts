@@ -214,11 +214,6 @@ export const TR_MESSAGES: Record<string, string> = {
     "Rakazo'nun bu bilgisayarda çalışması için Docker Desktop gerekir.",
   "Rakazo needs Docker to run on this computer.":
     "Rakazo'nun bu bilgisayarda çalışması için Docker gerekir.",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop, Rakazo'yu arka planda çalıştıran ücretsiz bir uygulamadır. Yükleyip bir kez açın.",
-  "Install Docker Engine and start it.": "Docker Engine'i yükleyip başlatın.",
-  "Download Docker Desktop": "Docker Desktop'ı indir",
-  "Install Docker": "Docker'ı yükle",
   "Docker is installed but not running. Open it to continue.":
     "Docker yüklü ama çalışmıyor. Devam etmek için açın.",
   "Starting {app}…": "{app} başlatılıyor…",

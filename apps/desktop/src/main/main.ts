@@ -78,13 +78,12 @@ import { launchDockerApp, resolveDockerBinary, runDocker } from "./this-computer
 import type { StackChoice } from "./this-computer/docker-move.js";
 import {
   chooseStack,
-  dockerRunning,
   moveAccepted,
   moveDockerStack,
+  offerDockerMove,
   readStackChoice,
   settleStackWhenNeeded,
   stackExists,
-  writeStackChoice,
 } from "./this-computer/docker-move.js";
 import { prepareHostComputer } from "./this-computer/host-computer.js";
 import type { ScreenPermissionApi } from "./this-computer/host-screen.js";
@@ -93,6 +92,7 @@ import {
   screenDriverInstaller,
   screenDriverRelease,
 } from "./this-computer/host-screen.js";
+import { createHostStack } from "./this-computer/host-stack.js";
 import {
   createLocalComputerChoice,
   saveLocalComputerHost,
@@ -245,45 +245,6 @@ async function probeServer(
   } catch (error) {
     return { ok: false, url, error: probeFailureMessage(error) };
   }
-}
-/**
- * Asked once, and only of someone running This computer on Docker while Docker answers: a
- * declined offer is remembered; an accepted one moves the data when the stack next starts.
- */
-async function offerDockerMove(userStackDir: string): Promise<StackChoice> {
-  if (
-    !(await dockerRunning({
-      stackDir: userStackDir,
-      platform: process.platform,
-      env: process.env,
-      exists: existsSync,
-      run: runDocker,
-    }))
-  )
-    return "docker";
-  const options: Electron.MessageBoxOptions = {
-    type: "question",
-    message: t("Run Rakazo without Docker?"),
-    detail: t("Your bots and data move over. Docker is stopped, not removed."),
-    buttons: [t("Move"), t("Keep Docker")],
-    defaultId: 0,
-    cancelId: 1,
-  };
-  // Asked from setup, the sheet keeps setup from moving on until it is answered.
-  const setup =
-    desktop.setupWindow !== null && !desktop.setupWindow.isDestroyed() ? desktop.setupWindow : null;
-  const { response } = await (setup
-    ? dialog.showMessageBox(setup, options)
-    : dialog.showMessageBox(options));
-  const choice = response === 0 ? "native" : "docker";
-  try {
-    await writeStackChoice(userStackDir, choice);
-  } catch (error) {
-    // A move that cannot be remembered would be offered again mid-way; stay on Docker for now.
-    reportDesktopError(error, "desktop.startup");
-    return "docker";
-  }
-  return choice;
 }
 /** A public health response is not enough: another checkout may own the same fixed port. */
 async function probeManagedStack(
@@ -717,6 +678,8 @@ app.whenReady().then(async () => {
   // Read again when the choice is settled later: Docker or either stack may have changed since.
   const stackFacts = async () => ({
     ...stackExists(userStackDir, existsSync),
+    // Linux runs, or adopts, the checkout's own stack; no Docker or VM is involved there.
+    hostStack: process.platform === "linux",
     // Installed but not running keeps the Docker path; no Docker at all leaves nothing to keep.
     dockerInstalled: resolveDockerBinary(process.platform, process.env, existsSync) !== null,
     choice: await readStackChoice(userStackDir),
@@ -731,6 +694,25 @@ app.whenReady().then(async () => {
     exists: existsSync,
     run: runDocker,
     sleep: defaultSleep,
+  };
+  /** The move question, asked from setup when setup is open so it waits for the answer. */
+  const askDockerMove = async () => {
+    const options: Electron.MessageBoxOptions = {
+      type: "question",
+      message: t("Run Rakazo without Docker?"),
+      detail: t("Your bots and data move over. Docker is stopped, not removed."),
+      buttons: [t("Move"), t("Keep Docker")],
+      defaultId: 0,
+      cancelId: 1,
+    };
+    const setup =
+      desktop.setupWindow !== null && !desktop.setupWindow.isDestroyed()
+        ? desktop.setupWindow
+        : null;
+    const { response } = await (setup
+      ? dialog.showMessageBox(setup, options)
+      : dialog.showMessageBox(options));
+    return response === 0;
   };
   const stackDeps = {
     stackDir: userStackDir,
@@ -764,15 +746,29 @@ app.whenReady().then(async () => {
       // A confirmed reuse changes no phase; the menu must hear about it separately.
       onReuseConfirmed: () => stopStackMenu.reuseConfirmed(),
     });
+  /** The checkout's own stack: it needs no Docker deps, and reads the host URL from its env. */
+  const hostStack = () =>
+    createHostStack(stackDeps, {
+      env: process.env,
+      packaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      hostComputer: desktop.hostComputer?.connection,
+      health: (url, signal) => probeServer(url, signal).then((result) => result.ok),
+    });
   const useStack = async (selected: StackChoice) => {
     const bundle = selected === "native" ? serverBundle : null;
     const moving = bundle !== null && moveAccepted(await stackFacts());
     // The stack can still run with local computer access disabled.
     desktop.hostComputer = await bestEffort(
       "start the desktop computer bridge",
-      prepareHostComputer(userDataDir, bundle === null ? "docker" : "native", hostScreen),
+      prepareHostComputer(userDataDir, selected === "docker" ? "docker" : "native", hostScreen),
     );
-    desktop.localStack = bundle === null ? dockerStack() : nativeStack(bundle, moving);
+    desktop.localStack =
+      selected !== "native"
+        ? dockerStack()
+        : bundle !== null
+          ? nativeStack(bundle, moving)
+          : hostStack();
   };
   // Setup can read the Docker controller's idle state while the move choice is pending.
   // Opening or starting the local stack waits for that choice before preparing the bridge.
@@ -782,7 +778,13 @@ app.whenReady().then(async () => {
     choice,
     async () => {
       const settled = await decideStack();
-      return settled === "ask" ? offerDockerMove(userStackDir) : settled;
+      return settled === "ask"
+        ? offerDockerMove({
+            ...moveDeps,
+            ask: askDockerMove,
+            onWriteError: (error) => reportDesktopError(error, "desktop.startup"),
+          })
+        : settled;
     },
     useStack,
   );
@@ -980,9 +982,10 @@ app.on("quit", (_event, exitCode) => {
 app.on("before-quit", (event) => {
   desktop.quitting = true;
   // Server processes this app runs itself stop with it; quit again once they have.
-  if (desktop.localStack instanceof NativeStackController && desktop.localStack.hasProcesses()) {
+  const stack = desktop.localStack;
+  if (stack?.hasProcesses?.()) {
     event.preventDefault();
-    void desktop.localStack.stop().finally(() => app.quit());
+    void stack.stop().finally(() => app.quit());
     return;
   }
   clearTimeout(desktop.warmWindowTimer);

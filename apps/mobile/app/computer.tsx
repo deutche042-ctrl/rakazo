@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
+  I18nManager,
   Modal,
   Pressable,
   ScrollView,
@@ -36,6 +37,7 @@ import {
   SafeAreaView,
 } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
+import { BrowserTabsPanel } from "../components/computers/browser-tabs-panel";
 import { ComputerKeyboardBar } from "../components/computers/computer-keyboard-bar";
 import { ComputerModePicker } from "../components/computers/computer-mode-picker";
 import { GlassIconButton } from "../components/native/glass-icon-button";
@@ -436,11 +438,22 @@ export default function Computer() {
       }}
     />
   ) : null;
+  const tabs = computer?.browserTabs ?? [];
+  // A host runs one shared browser, so a running computer with no frame yet is waiting for that
+  // browser. The web panel says so, and the mobile panel keeps the same status rather than
+  // "Connecting to the screen…".
+  const browserWaiting =
+    computer?.state === "running" &&
+    computer.browserAvailable === true &&
+    !embeddedScreenUrl &&
+    !screenError;
   const placeholder =
     (computer?.state === "running" || !screenOriginError ? screenError : null) ??
     (unreachableScreen
       ? t`Could not load the desktop. This device cannot reach the screen URL.`
-      : computerPreviewPlaceholder(computer?.state, booting, "takeControl"));
+      : browserWaiting
+        ? t`Waiting for the browser…`
+        : computerPreviewPlaceholder(computer?.state, booting, "takeControl"));
   // Booting shows in the preview; the header and Back stay, and leaving lets the boot finish.
   const bootPending = booting || computer?.state === "booting";
   // Retrying cannot help once the hours are spent; only a plan change can.
@@ -512,6 +525,11 @@ export default function Computer() {
           }
         />
       ) : null}
+      {tabs.length ? (
+        <View style={{ marginBottom: 12 }}>
+          <BrowserTabsPanel tabs={tabs} />
+        </View>
+      ) : null}
       <View
         style={{
           height: 360,
@@ -565,6 +583,20 @@ export default function Computer() {
           onPress={() => void openComputer({ takeControl: false })}
           style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
         />
+        {!computerOpen &&
+        foreground &&
+        computer?.state === "running" &&
+        embeddedScreenUrl &&
+        !screenError ? (
+          <View
+            pointerEvents="none"
+            style={[styles.liveBadge, I18nManager.isRTL ? { right: 8 } : { left: 8 }]}
+          >
+            <Text style={[styles.liveBadgeText, { color: tokens.chatUserForeground }]}>
+              {t`Live`}
+            </Text>
+          </View>
+        ) : null}
       </View>
       <View
         style={{
@@ -687,6 +719,7 @@ export default function Computer() {
                     label={t`Take control`}
                     prominence="secondary"
                     fill={false}
+                    disabled={bootPending}
                     style={{ alignSelf: "center" }}
                     onPress={() =>
                       void bootComputer({ takeControl: true, showProgress: false }).catch(
@@ -899,4 +932,15 @@ function ScreenWebView({
 
 const styles = StyleSheet.create({
   sharedBrowser: { fontSize: 12, paddingHorizontal: 14, paddingBottom: 4 },
+  // The same "Live" marker the web panel draws over a running screen.
+  liveBadge: {
+    position: "absolute",
+    top: 8,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    backgroundColor: "rgba(0, 0, 0, 0.6)",
+  },
+  // White in both themes, like the marker's fill: it sits over a live screen, not on a surface.
+  liveBadgeText: { fontSize: 14, lineHeight: 18 },
 });

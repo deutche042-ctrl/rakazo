@@ -9,7 +9,7 @@ echo "== API =="
 curl -sf -m 3 http://127.0.0.1:3100/internal/health || echo "API not answering"
 echo
 echo "== web =="
-curl -s -o /dev/null -w "http %{http_code}\n" -m 3 http://127.0.0.1:5173/ || true
+curl -s -o /dev/null -w "http %{http_code}\n" -m 3 http://localhost:5173/ || true
 echo "== postgres =="
 "$PG_BIN/pg_ctl" -D "$STATE/pgdata" status 2>/dev/null | head -1 || echo "not running"
 echo "== browser =="

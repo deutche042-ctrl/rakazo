@@ -7,12 +7,12 @@
 #   1. If the systemd user service `rakazo-native` is installed, start (or reuse) it.
 #   2. Otherwise, if <RAKAZO_HOME>/scripts/native/start.sh exists, run it in the background.
 #      RAKAZO_HOME defaults to ~/Documents/my-bots-rakazo/rakazo.
-#   3. Wait up to RAKAZO_WAIT_SECONDS (default 90) for http://127.0.0.1:5173, then xdg-open it.
+#   3. Wait up to RAKAZO_WAIT_SECONDS (default 90) for http://localhost:5173, then xdg-open it.
 #
 # Nothing secret is read or printed here; credentials stay in the checkout's .env.
 set -uo pipefail
 
-URL="${RAKAZO_URL:-http://127.0.0.1:5173}"
+URL="${RAKAZO_URL:-http://localhost:5173}"
 SERVICE="rakazo-native.service"
 WAIT_SECONDS="${RAKAZO_WAIT_SECONDS:-90}"
 DEFAULT_HOME="$HOME/Documents/my-bots-rakazo/rakazo"

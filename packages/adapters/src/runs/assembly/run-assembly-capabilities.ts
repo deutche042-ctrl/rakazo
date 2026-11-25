@@ -16,6 +16,7 @@ import { getLogger } from "@rakazo/logging";
 import { createApprovedEffectReplayQueue } from "../../approvals/approval-effect.js";
 import { appendOutsideText, taskPromptIsOutside } from "../../approvals/review-target-sources.js";
 import { loadGroupContext } from "../../bots/group-handoff.js";
+import { browseMcpOffered } from "../../browse/browse-instructions.js";
 import { USER_CLOUD_AGENT_KEY_PREFIX } from "../../cloud-agents/cloud-agent-factory.js";
 import { diskNoteInstruction, recordComputerDisk } from "../../computers/computer-disk.js";
 import { scheduleComputerSleep } from "../../computers/computer-idle.js";
@@ -915,7 +916,9 @@ export async function loadComputerInstructions(
         .catch(() => undefined)
     : undefined;
   const hostInstruction = hostEnvironment
-    ? hostComputerInstruction(computerKind, hostEnvironment)
+    ? hostComputerInstruction(computerKind, hostEnvironment, {
+        browseMcp: browseMcpOffered(offeredToolNames),
+      })
     : undefined;
   const computerInstruction = [
     COMPUTER_USE_INSTRUCTION,

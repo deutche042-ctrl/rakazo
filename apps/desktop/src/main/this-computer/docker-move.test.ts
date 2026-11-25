@@ -29,6 +29,7 @@ describe("chooseStack", () => {
     dockerStack: false,
     dockerInstalled: true,
     nativeStack: false,
+    hostStack: false,
     choice: null,
   };
 
@@ -37,6 +38,27 @@ describe("chooseStack", () => {
     expect(chooseStack({ ...base, eligible: false, nativeStack: true, choice: "native" })).toBe(
       "docker",
     );
+  });
+
+  it("keeps an older Docker stack on Linux, whose data it cannot import", () => {
+    expect(chooseStack({ ...base, hostStack: true, eligible: false })).toBe("native");
+    // Starting the native stack here would hide the bots and chats the Docker stack still holds.
+    expect(chooseStack({ ...base, hostStack: true, eligible: false, dockerStack: true })).toBe(
+      "docker",
+    );
+    // Once that stack's files are gone, or a native stack already exists, the checkout's runs.
+    expect(chooseStack({ ...base, hostStack: true, eligible: false, dockerStack: false })).toBe(
+      "native",
+    );
+    expect(
+      chooseStack({
+        ...base,
+        hostStack: true,
+        eligible: false,
+        dockerStack: true,
+        nativeStack: true,
+      }),
+    ).toBe("native");
   });
 
   it("goes native on a Mac that never ran the Docker stack, or already moved", () => {

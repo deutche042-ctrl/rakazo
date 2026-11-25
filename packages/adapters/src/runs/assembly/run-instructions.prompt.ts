@@ -1,5 +1,6 @@
 import { FLEET_WRITE_TOOL_NAMES } from "@rakazo/contracts";
 import { runReadsThreadHistory, toolRequiresExplicitApproval } from "@rakazo/core";
+import { BROWSE_PAGE_FALLBACK, browsePageWorkClause } from "../../browse/browse-instructions.js";
 import { MODEL_CANNOT_SEE_MESSAGE } from "../../models/model-vision.prompt.js";
 import { SCHEDULE_TOOL_NAMES } from "../../tools/schedule-tools.js";
 import type { UserComputerState } from "../tools/run-tools-user-computer.js";
@@ -25,15 +26,43 @@ export const COMPUTER_USE_INSTRUCTION =
 export const PRIVATE_WORKSPACE_INSTRUCTION =
   "This entire workspace is your private home. Relative file paths and shell working directories start at its root.";
 
+/**
+ * Google answers an automated browser's sign-in by refusing it, and the same page would refuse again,
+ * so no caller may retry it. The connected Google app (OAuth) is the only supported route.
+ */
+const GOOGLE_SIGNIN_OAUTH_INSTRUCTION =
+  "Never sign in to a Google account in the browser: Google refuses sign-ins from automated browsers with 'This browser or app may not be secure'. If that page or message appears, stop immediately and ask the user to intervene: they sign in themselves in a real browser, or they connect the Google app (OAuth) in Integrations and you use its tools. Do not work around that page, never retry a refused sign-in, and never ask for their Google password.";
+
+/**
+ * A self-hosted Linux host runs the native scripts, so a person can sign in once in a real window on
+ * the same profile. Only that setup has this window; every other computer uses OAuth.
+ */
+const GOOGLE_SIGNIN_LOCAL_INSTRUCTION =
+  "If the user asks to sign in to Google in the browser on this Linux host, ask them to run `bash scripts/native/browser-login.sh` on the host machine: it opens an ordinary Chrome window on the same profile for a human sign-in. If Google's refusal page appears, stop immediately and hand the step to the user; never retry it. Never ask for their Google password in the conversation.";
+
 /** Where commands run when the computer is a host with its own shell rather than a sandbox. */
 export function hostComputerInstruction(
   computerKind: string | undefined,
   host: { home: unknown; shell: unknown; platform: string },
+  options?: { sharedNativeBrowser?: boolean; browseMcp?: boolean },
 ): string {
   const shell = `Home: ${JSON.stringify(host.home)}. Shell: ${JSON.stringify(host.shell)}. The shell tool executes commands with that shell. Use its native syntax, paths and installed tools; do not assume Linux or bash.`;
+  // scripts/native exists only on a self-hosted Linux host. The platform alone cannot tell that host
+  // from a Linux desktop app, where scripts/native is absent, so only a caller that knows it is the
+  // native stack may turn the local sign-in window on.
+  const localWindow = options?.sharedNativeBrowser === true;
+  const googleInstruction =
+    computerKind !== "wuying" && localWindow
+      ? `${GOOGLE_SIGNIN_OAUTH_INSTRUCTION} ${GOOGLE_SIGNIN_LOCAL_INSTRUCTION}`
+      : GOOGLE_SIGNIN_OAUTH_INSTRUCTION;
+  // With browse assigned, the page tools are a fallback: browse drives its own tab, and the panel
+  // keeps a separate tab so a person can still watch and take over.
+  const browserInstruction = options?.browseMcp
+    ? "You have one shared browser: use the browse MCP tools for web pages and treat it as your browser, not a separate computer. The person sees and controls a separate panel tab; open the same page with browser_navigate before handing control to them."
+    : "You have one shared browser: use browser_navigate, browser_snapshot and browser_act for web pages and treat it as your browser, not a separate computer. A snapshot already covers the whole page, so you never need to scroll to read it; browser_act supports click, fill, type and upload.";
   return computerKind === "wuying"
-    ? `Commands run on a Windows cloud computer. ${shell} Files outside the bot workspace can be accessed through commands. The screen shows the Windows desktop; use the graphical tools for apps without a command line.`
-    : `Commands run on the user's ${host.platform} computer with their account permissions. ${shell} Local files outside the bot workspace can be accessed through commands. You have one shared browser: use browser_navigate, browser_snapshot and browser_act for web pages and treat it as your browser, not a separate computer. A snapshot already covers the whole page, so you never need to scroll to read it; browser_act supports click, fill, type and upload. Never open a page with xdg-open or another desktop browser. There is no desktop or screen to control, and a missing app integration is never a reason to decline a site you can open in the browser.`;
+    ? `Commands run on a Windows cloud computer. ${shell} Files outside the bot workspace can be accessed through commands. The screen shows the Windows desktop; use the graphical tools for apps without a command line. ${googleInstruction}`
+    : `Commands run on the user's ${host.platform} computer with their account permissions. ${shell} Local files outside the bot workspace can be accessed through commands. ${browserInstruction} Never open a page with xdg-open or another desktop browser. There is no desktop or screen to control, and a missing app integration is never a reason to decline a site you can open in the browser. ${googleInstruction}`;
 }
 
 /** Cap the roster so a large Space cannot flood the prompt. */
@@ -197,7 +226,15 @@ function webLookupClause(disabled?: ReadonlySet<string>): string | undefined {
 function pageWorkClause(
   pageBrowserAllowed: boolean,
   disabled?: ReadonlySet<string>,
+  browseMcp?: boolean,
 ): string | undefined {
+  // A browse assignment owns page work. The browse clause also states the tab split and the
+  // handoff that keeps the panel's human control, so the page-tool clause would contradict it.
+  if (browseMcp) {
+    return pageBrowserAllowed
+      ? `${browsePageWorkClause()} ${BROWSE_PAGE_FALLBACK}`
+      : browsePageWorkClause();
+  }
   if (!pageBrowserAllowed) return undefined;
   const tools = ["browser_navigate", "browser_snapshot", "browser_act"].filter((name) =>
     builtinOffered(disabled, name),
@@ -332,12 +369,14 @@ function userComputerInstruction(state: UserComputerState): string | undefined {
 function toolUsageLine(parts: {
   computerInstruction: string;
   pageBrowserAllowed: boolean;
+  /** The run has the browse MCP server, so browse is the page tool. */
+  browseMcp?: boolean;
   disabledBuiltinTools?: ReadonlySet<string>;
   followUpsOffered?: boolean;
 }): string {
   const disabled = parts.disabledBuiltinTools;
   const clauses = [
-    pageWorkClause(parts.pageBrowserAllowed, disabled),
+    pageWorkClause(parts.pageBrowserAllowed, disabled, parts.browseMcp),
     webLookupClause(disabled),
     ...secretGuidance(disabled),
     builtinOffered(disabled, "connect_app")
@@ -426,6 +465,8 @@ export function userTurnInstructions(parts: {
   historyMyChats?: boolean;
   computerInstruction: string;
   pageBrowserAllowed: boolean;
+  /** The run was offered the browse MCP server, so its instructions name browse for page work. */
+  browseMcp?: boolean;
   taskCatalogInstruction?: string;
   workspaceInstruction: string;
   agentEnvironmentInstruction: string | undefined;

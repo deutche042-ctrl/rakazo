@@ -74,6 +74,23 @@ export function usePasskeysSupported(): boolean {
   return supported;
 }
 
+/**
+ * Why passkeys are missing when the server asks for `localhost` and the page was opened by the
+ * loopback IP: WebAuthn binds the credential to the host the page came from, so only the
+ * `localhost` address on this computer can offer them. Null everywhere else.
+ */
+export function passkeyHostHint(
+  rpId: string | null | undefined,
+  host = window.location.hostname,
+  port = window.location.port,
+): string | null {
+  if (!rpId || hostMatchesPasskeyRpId(host, rpId)) return null;
+  if (rpId.toLowerCase() !== "localhost") return null;
+  if (host !== "127.0.0.1" && host !== "::1" && host !== "[::1]") return null;
+  const address = port ? `http://localhost:${port}` : "http://localhost";
+  return t`Passkeys need ${address} on this computer.`;
+}
+
 let passkeysVersion = 0;
 const passkeyListeners = new Set<() => void>();
 

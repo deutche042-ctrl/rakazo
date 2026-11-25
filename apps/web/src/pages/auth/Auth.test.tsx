@@ -99,6 +99,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   delete window.rakazoDesktop;
 });
@@ -131,15 +132,34 @@ async function submit() {
   });
 }
 it.each(["in", "up", "forgot"] as const)(
-  "stays blank while capabilities load on %s",
+  "shows a loading state while capabilities load on %s",
   async (mode) => {
     vi.mocked(fetchAuthCapabilities).mockReturnValue(new Promise(() => undefined));
     await render(mode);
-    expect(host.querySelector("input")).toBeNull();
-    expect(host.textContent).toBe("");
+    expect(host.querySelector("[data-rakazo-auth-loading]")).not.toBeNull();
+    expect(host.textContent).toContain("Loading sign-in…");
     expect(host.querySelector("form")).toBeNull();
   },
 );
+it("stops waiting for the app after ten seconds and offers a retry", async () => {
+  vi.useFakeTimers();
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    ...capabilities,
+    passwordAuth: true,
+    providers: [],
+  });
+  vi.mocked(authClient.signIn.email).mockResolvedValue({ data: {}, error: null } as never);
+  await render();
+  await enter(host.querySelector('input[name="email"]'), "person@example.com");
+  await enter(host.querySelector('input[name="password"]'), "correct-horse-battery");
+  await submit();
+  expect(button("Working…").disabled).toBe(true);
+  await act(async () => {
+    vi.advanceTimersByTime(10_000);
+  });
+  expect(button("Sign in").disabled).toBe(false);
+  expect(host.textContent).toContain("Signed in, but Rakazo did not open. Try again.");
+});
 it.each(["in", "up"] as const)("offers SSO and hides credentials on %s", async (mode) => {
   vi.mocked(fetchAuthCapabilities).mockResolvedValue(capabilities);
   await render(mode);
@@ -154,7 +174,8 @@ it("retries failed capabilities without exposing a password form", async () => {
     .mockRejectedValueOnce(new Error())
     .mockResolvedValueOnce(capabilities);
   await render();
-  expect(host.textContent).toContain("Could not load sign-in options");
+  expect(host.textContent).toContain("Could not reach the server");
+  expect(host.textContent).toContain("Check that Rakazo is running, then try again.");
   expect(host.querySelector("input")).toBeNull();
   const retry = [...host.querySelectorAll("button")].find(
     (button) => button.textContent === "Retry",
@@ -162,6 +183,18 @@ it("retries failed capabilities without exposing a password form", async () => {
   await act(async () => retry.click());
   expect(fetchAuthCapabilities).toHaveBeenCalledTimes(2);
   expect(host.textContent).toContain("Continue with Example");
+});
+it("explains a server with no sign-in method and offers a retry", async () => {
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({ ...capabilities, sso: null });
+  await render();
+  expect(host.textContent).toContain("This server has no sign-in method available.");
+  expect(host.textContent).toContain("Check the server setup, then try again.");
+  expect(host.querySelector("input")).toBeNull();
+  const retry = [...host.querySelectorAll("button")].find(
+    (button) => button.textContent === "Retry",
+  )!;
+  await act(async () => retry.click());
+  expect(fetchAuthCapabilities).toHaveBeenCalledTimes(2);
 });
 it.each(["in", "up"] as const)("offers providers before the email form on %s", async (mode) => {
   vi.mocked(fetchAuthCapabilities).mockResolvedValue({ ...capabilities, passwordAuth: true });

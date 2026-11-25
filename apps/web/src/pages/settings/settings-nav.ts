@@ -11,6 +11,7 @@ import {
   Layers,
   MessageCircle,
   Monitor,
+  RadioTower,
   Settings,
   ShieldCheck,
   Volume2,
@@ -35,6 +36,8 @@ export function useSettingsNavItems(available: {
   billing: boolean;
   updates: boolean;
   labs: boolean;
+  /** Local development only: the live link is served by the native scripts, not a build. */
+  dev?: boolean;
 }): SettingsNavItem[] {
   const { t } = useLingui();
   return [
@@ -90,6 +93,16 @@ export function useSettingsNavItems(available: {
       ? [{ id: "computer" as const, label: t`Computers`, icon: Monitor }]
       : []),
     ...(available.labs ? [{ id: "labs" as const, label: t`Labs`, icon: FlaskConical }] : []),
+    ...(available.dev
+      ? [
+          {
+            id: "live-link" as const,
+            label: t`Live link`,
+            icon: RadioTower,
+            description: t`Reach this server from your phone, even outside your home.`,
+          },
+        ]
+      : []),
     { id: "usage", label: t`Usage`, icon: Gauge },
     ...(available.billing ? [{ id: "billing" as const, label: t`Billing`, icon: CreditCard }] : []),
     {

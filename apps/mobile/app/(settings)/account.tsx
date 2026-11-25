@@ -346,6 +346,11 @@ export default function Account() {
             href: "/computers",
             icon: { ios: "desktopcomputer", android: "desktop-outline" },
           })}
+          {settingsLink({
+            title: t`Server`,
+            href: "/server",
+            icon: { ios: "server.rack", android: "server-outline" },
+          })}
           {me?.paymentWalletProvider
             ? settingsLink({
                 title: t`Wallet`,

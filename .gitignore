@@ -43,12 +43,14 @@ verify-report
 design/
 PRODUCT_PLAN.md
 
+# Local workflow-tool state, never source or build output
+.v2c/
+
 # Lingui compiled catalogs — the Vite plugin and Metro compile .po at build time
 packages/i18n/locales/**/*.mjs
 packages/i18n/locales/**/*.js
 # Every string in the source, extracted before each production build
 packages/i18n/locales/messages.pot
-apps/web/scripts/msgids.json
 playwright-report-www
 
 # Downloaded embedded computer screen SDK files

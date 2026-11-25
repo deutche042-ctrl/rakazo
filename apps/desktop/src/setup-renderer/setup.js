@@ -45,17 +45,18 @@
   const stackDetails = document.getElementById("stack-details");
   const stackProgress = document.getElementById("stack-progress");
   const stackProgressFill = document.getElementById("stack-progress-fill");
-  const stackHint = document.getElementById("stack-hint");
   const status = document.getElementById("status");
   const checkButton = document.getElementById("check");
   const continueButton = document.getElementById("continue");
   const quitButton = document.getElementById("quit");
 
   const STACK_POLL_MS = 1000;
+  /** A bridge call that never answers must not leave the page locked with no way out. */
+  const BRIDGE_TIMEOUT_MS = 20_000;
+  /** The stack's own start bound is five minutes; this is the last resort after it. */
+  const FOLLOW_TIMEOUT_MS = 6 * 60_000;
   /** How often setup looks for Docker again while it waits for the person to install or open it. */
   const DOCKER_RECHECK_MS = 3000;
-  // Linux has Docker Engine and no single installer; macOS and Windows get Docker Desktop.
-  const dockerDesktop = bridge?.platform !== "linux";
   const PHASE_LABELS = {
     "checking-docker": t("Getting ready…"),
     preparing: t("Getting ready…"),
@@ -101,6 +102,26 @@
   let dockerRecheckTimer = null;
   /** True from a background look for Docker until it reports something other than its own check. */
   let dockerRechecking = false;
+  /** Set when setup could not read its state; Continue then runs that read again. */
+  let initFailed = false;
+  let watchingStack = false;
+
+  /** Rejects a bridge call that never settles, so its controls can be released with a message. */
+  function withDeadline(promise) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Setup did not answer.")), BRIDGE_TIMEOUT_MS);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
 
   function selectedMode() {
     const checked = form.querySelector('input[name="mode"]:checked');
@@ -229,25 +250,13 @@
 
     renderProgress(stack);
     renderDetails(stack);
-    renderDockerHelp(phase);
 
-    if (phase === "docker-missing")
-      continueButton.textContent = dockerDesktop
-        ? t("Download Docker Desktop")
-        : t("Install Docker");
-    else if (phase === "failed") continueButton.textContent = t("Retry");
+    // Nothing needs installing on this computer; a stack that is not up is retried as it is.
+    if (phase === "docker-missing" || phase === "failed")
+      continueButton.textContent = t("Retry");
     else continueButton.textContent = t("Continue");
     setBusy(!TERMINAL_PHASES.has(phase));
     if (waitingForDocker) scheduleDockerRecheck();
-  }
-
-  function renderDockerHelp(phase) {
-    stackHint.hidden = phase !== "docker-missing";
-    stackHint.textContent = dockerDesktop
-      ? t(
-          "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.",
-        )
-      : t("Install Docker Engine and start it.");
   }
 
   /** Looks for Docker again on a timer, so installing or opening it is all the person has to do. */
@@ -259,8 +268,7 @@
       dockerRechecking = true;
       // Rendering the settled phase schedules the next look while Docker is still unavailable;
       // a look whose start or state read failed schedules its own, so polling never just stops.
-      bridge.stack
-        .start()
+      withDeadline(bridge.stack.start())
         .then(() => followStack())
         .catch(() => undefined)
         .finally(() => {
@@ -291,7 +299,9 @@
     lockChoice(true);
     setStatus(t("Connecting…"));
     try {
-      const saved = await bridge.save({ mode, serverUrl: url, ...(headers ? { headers } : {}) });
+      const saved = await withDeadline(
+        bridge.save({ mode, serverUrl: url, ...(headers ? { headers } : {}) }),
+      );
       if (!saved.ok) setStatus(saved.error ?? t("Could not save that address."), "error");
     } catch {
       setStatus(t("Could not save that address. Try again."), "error");
@@ -326,9 +336,10 @@
   async function followStack() {
     if (stackPolling) return;
     stackPolling = true;
+    const deadline = Date.now() + FOLLOW_TIMEOUT_MS;
     try {
       while (true) {
-        const stack = await bridge.stack.state();
+        const stack = await withDeadline(bridge.stack.state());
         if (stack === null) throw new Error("Setup is not active");
         // Checked after the await: a mode change during it hands the form to the change
         // handler, and a save it started must stay busy and must not be re-rendered over.
@@ -336,11 +347,18 @@
         renderStack(stack);
         if (TERMINAL_PHASES.has(stack.phase)) {
           if (stack.phase === "ready" && selectedMode() === "new") {
-            const current = await bridge.state();
+            const current = await withDeadline(bridge.state());
             if (selectedMode() !== "new") return;
             defaultLocalUrl = current.defaultLocalUrl;
             await save("new", defaultLocalUrl);
           }
+          return;
+        }
+        // The controller gives up on its own; this only keeps a stuck stack from holding the form.
+        if (Date.now() >= deadline) {
+          setStatus(t("Could not follow the local stack. Try again."), "error");
+          continueButton.textContent = t("Retry");
+          setBusy(false);
           return;
         }
         await waitForStackChange();
@@ -362,7 +380,7 @@
     setBusy(true);
     try {
       // A queued start still reads `idle`; leave the panel as it is and let the follow render it.
-      const started = await bridge.stack.start();
+      const started = await withDeadline(bridge.stack.start());
       // The person left "This computer" mid-start; the next pushed state re-attaches the follow.
       if (generation !== requestGeneration) return;
       if (started !== null && started.phase !== "idle") renderStack(started);
@@ -397,7 +415,7 @@
     setBusy(true);
     setCheckStatus(t("Checking…"));
     try {
-      const result = await bridge.test(value, headers);
+      const result = await withDeadline(bridge.test(value, headers));
       // The address or the mode changed under the test, so its result speaks for neither.
       if (generation !== requestGeneration) return result;
       if (result.ok) {
@@ -469,11 +487,14 @@
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    // A setup that could not read its state is retried from here rather than left locked.
+    if (initFailed) {
+      void init();
+      return;
+    }
     const mode = selectedMode();
-    // Without Docker the main button is the download; setup keeps looking for Docker meanwhile.
-    if (mode === "new" && lastStack?.phase === "docker-missing")
-      void bridge.openLink("docker-download");
-    else if (mode === "new") void runStack();
+    // This computer starts, or retries, its own stack; there is nothing to install first.
+    if (mode === "new") void runStack();
     // Cloud is an existing server at a fixed address.
     else if (mode === "cloud") void save("existing", cloudUrl);
     else {
@@ -485,6 +506,8 @@
 
   /** Pushed state keeps progress moving even when the OS throttles this window's timers. */
   function watchStack() {
+    if (watchingStack) return;
+    watchingStack = true;
     bridge.stack.onChange(() => {
       wakePoll?.();
       // A follow that ended on an error restarts here instead of leaving the panel frozen;
@@ -505,10 +528,11 @@
     }
 
     watchStack();
+    initFailed = false;
     // Continue needs the Cloud address and any saved choice before it can submit.
     setBusy(true);
     try {
-      const state = await bridge.state();
+      const state = await withDeadline(bridge.state());
       if (state === null) throw new Error("Setup is not active");
       defaultLocalUrl = state.defaultLocalUrl;
       cloudUrl = state.cloudUrl;
@@ -527,7 +551,7 @@
       }
       // A relaunch with the stack down starts it before this window opens; show that
       // attempt instead of the saved mode, and follow it while it is still running.
-      const stack = await bridge.stack.state();
+      const stack = await withDeadline(bridge.stack.state());
       const attached = stack !== null && stack.phase !== "idle";
       if (attached) document.getElementById("mode-new").checked = true;
       syncPanels();
@@ -542,8 +566,12 @@
         continueButton.focus();
       }
     } catch {
+      // Nothing can be chosen before the page knows its state, but retrying is one click away.
+      initFailed = true;
       setStatus(t("Setup could not start. Quit Rakazo and try again."), "error");
-      setBusy(true);
+      continueButton.hidden = false;
+      continueButton.textContent = t("Retry");
+      setBusy(false);
     }
   }
 
