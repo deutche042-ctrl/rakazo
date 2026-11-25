@@ -156,7 +156,7 @@ import { startMessagingRuntime } from "./messaging/messaging-runtime.js";
 import { settleWithTimeout } from "./messaging/team-chat-startup.js";
 import { recordSignInEnded } from "./models/model-connect-analytics.js";
 import { createRouter, routerEnv } from "./router.js";
-import { mountNativeRuntime } from "./routes/native-runtime.js";
+import { mountNativeRuntimeIfNativeCheckout } from "./routes/native-runtime.js";
 import { handleHttpError } from "./rpc-errors.js";
 import type { SpaceDeletionDeps } from "./spaces/space-deletion.js";
 import { afterSpaceDeparture } from "./spaces/space-departure.js";
@@ -784,16 +784,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       });
     });
   }
-  // The native live link (scripts/native/tunnel.sh): status, uptime, the last log lines and one
-  // way to stop it. Only a native checkout has one: the state file and the pid it names belong to
-  // this machine, so a hosted deployment must not answer these routes at all. Otherwise any
-  // signed-in member could read the tunnel log and stop a local process. Both routes also need a
-  // session, so the log is never readable without one.
-  const nativeRuntime =
-    env.nodeEnv === "development" || Boolean(process.env.RAKAZO_NATIVE_STATE_DIR?.trim());
-  if (nativeRuntime) {
-    mountNativeRuntime(app, { session: readSession, env: process.env });
-  }
+  // The native live link (scripts/native/tunnel.sh) answers only on a native checkout.
+  mountNativeRuntimeIfNativeCheckout(app, { session: readSession, env: process.env });
   app.route(
     "/",
     monitoringRoutes(

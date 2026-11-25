@@ -206,6 +206,17 @@ export interface NativeRuntimeDeps {
   dir?: string;
 }
 
+/**
+ * Mount the live-link routes only on a native checkout. A hosted deployment has no tunnel on its
+ * own machine, so its members must not read a local log or stop a local process.
+ */
+export function mountNativeRuntimeIfNativeCheckout(app: Hono, deps: NativeRuntimeDeps): void {
+  const env = deps.env ?? process.env;
+  if (env.nodeEnv === "development" || Boolean(env.RAKAZO_NATIVE_STATE_DIR?.trim())) {
+    mountNativeRuntime(app, deps);
+  }
+}
+
 export function mountNativeRuntime(app: Hono, deps: NativeRuntimeDeps): void {
   const options: NativeRuntimeOptions = { env: deps.env, dir: deps.dir };
 
