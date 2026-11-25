@@ -77,6 +77,33 @@ package_for() {
   esac
 }
 
+# A binary with a missing shared library cannot report its version either, so this runs before any
+# `--version` check. Otherwise a minimal host is told "did not report itself as Google Chrome"
+# instead of which packages to install.
+check_libraries() {
+  local bin="$1" missing packages="" unknown="" lib package
+  missing="$(ldd "$bin" 2>/dev/null | awk '/not found/ {print $1}' | sort -u || true)"
+  [ -n "$missing" ] || return 0
+  while IFS= read -r lib; do
+    [ -n "$lib" ] || continue
+    package="$(package_for "$lib")"
+    if [ -n "$package" ]; then
+      packages="$packages $package"
+    else
+      unknown="$unknown $lib"
+    fi
+  done <<<"$missing"
+  log "these shared libraries are missing:"
+  printf '%s\n' "$missing" | sed 's/^/  /' >&2
+  if [ -n "$packages" ]; then
+    log "suggested install: sudo apt-get install -y$packages"
+  fi
+  if [ -n "$unknown" ]; then
+    log "find the packages for:$unknown (apt-file search <library>, or your distribution's package search)"
+  fi
+  die "Chrome cannot start until those libraries are installed; this script never runs sudo."
+}
+
 if BIN="$(find_chrome)"; then
   log "using Google Chrome at $BIN"
 else
@@ -109,33 +136,14 @@ else
   rm -rf "$TOOLS"
   mv "$TOOLS.new" "$TOOLS"
   BIN="$TOOLS/opt/google/chrome/chrome"
+  # Libraries first: a missing one also breaks `--version`, so this names the packages instead of
+  # reporting a perfectly good Chrome binary as "not Google Chrome".
+  check_libraries "$BIN"
   is_real_chrome "$BIN" || die "$BIN did not report itself as Google Chrome."
 fi
 
-log "$("$BIN" --version)"
-MISSING="$(ldd "$BIN" 2>/dev/null | awk '/not found/ {print $1}' | sort -u || true)"
-if [ -n "$MISSING" ]; then
-  PACKAGES=""
-  UNKNOWN=""
-  while IFS= read -r lib; do
-    [ -n "$lib" ] || continue
-    package="$(package_for "$lib")"
-    if [ -n "$package" ]; then
-      PACKAGES="$PACKAGES $package"
-    else
-      UNKNOWN="$UNKNOWN $lib"
-    fi
-  done <<<"$MISSING"
-  log "these shared libraries are missing:"
-  printf '%s\n' "$MISSING" | sed 's/^/  /' >&2
-  if [ -n "$PACKAGES" ]; then
-    log "suggested install: sudo apt-get install -y$PACKAGES"
-  fi
-  if [ -n "$UNKNOWN" ]; then
-    log "find the packages for:$UNKNOWN (apt-file search <library>, or your distribution's package search)"
-  fi
-  die "Chrome cannot start until those libraries are installed; this script never runs sudo."
-fi
+log "$("$BIN" --version 2>/dev/null || echo "version unavailable")"
+check_libraries "$BIN"
 
 # The extracted copy's chrome-sandbox is not root-owned and setuid, so the sandbox may refuse to start
 # even with every library present. That is a sandbox/user-namespace limit, not a missing library.
@@ -147,7 +155,7 @@ if [ -f "$(dirname "$BIN")/chrome-sandbox" ]; then
   log " /proc/sys/user/max_user_namespaces."
 fi
 
-command -v sqlite3 >/dev/null 2>&1 || log "warning: sqlite3 is missing, so browser-login.sh cannot verify the Google session."
+command -v sqlite3 >/dev/null 2>&1 || log "warning: sqlite3 is missing, so browser-login.sh will report the Google session as unverified and exit 3."
 
 log "use it for the sign-in window:"
 printf '\nexport RAKAZO_NATIVE_LOGIN_CHROME_BIN="%s"\n' "$BIN"

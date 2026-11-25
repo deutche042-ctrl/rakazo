@@ -4,7 +4,8 @@
 //   node scripts/native/setup-env.mjs
 //
 // Secrets live in ~/.local/share/rakazo-native/{owner.pw,app.pw} (600) and are
-// copied into .env without ever being printed. Rerunning keeps existing values.
+// copied into .env without ever being printed. Rerunning keeps existing secrets, origins and
+// ports, so a LAN or tailnet address the person set is not replaced with localhost.
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -63,6 +64,11 @@ function setUnlessReal(key, generate) {
   set(key, generate());
 }
 
+/** Writes a default only when the key is absent or still the template's placeholder. */
+function setDefault(key, value) {
+  setUnlessReal(key, () => value);
+}
+
 set("NODE_ENV", "development");
 set("POSTGRES_USER", "rakazo");
 set("POSTGRES_DB", "rakazo");
@@ -76,16 +82,18 @@ setUnlessReal("SCREEN_PROXY_SECRET", () => hex(32));
 setUnlessReal("SANDBOX_SUPERVISOR_TOKEN", () => hex(32));
 set("SANDBOX_PROVIDER", "desktop");
 // The desktop app and the probes are pinned to these ports; naming them turns off port
-// selection in scripts/dev.mjs so the sign-in origin survives relaunches.
-set("WEB_PORT", "5173");
-set("API_PORT", "3100");
+// selection in scripts/dev.mjs so the sign-in origin survives relaunches. A value the person
+// already chose (a LAN or tailnet address, another port) is kept, as the header promises.
+setDefault("WEB_PORT", "5173");
+setDefault("API_PORT", "3100");
 // WebAuthn binds passkeys to `localhost`; the loopback IP would silently disable them.
-set("BETTER_AUTH_URL", "http://localhost:5173");
-set("WEB_ORIGIN", "http://localhost:5173");
-set("API_URL", "http://localhost:3100");
+setDefault("BETTER_AUTH_URL", "http://localhost:5173");
+setDefault("WEB_ORIGIN", "http://localhost:5173");
+setDefault("API_URL", "http://localhost:3100");
 set("DATA_DIR", dataDir);
-set("EMAIL_EMULATOR", "true");
-set("SIGNUPS_ENABLED", "true");
+// A person who turned signups off or removed the emulator (for a tailnet run) keeps that choice.
+setDefault("EMAIL_EMULATOR", "true");
+setDefault("SIGNUPS_ENABLED", "true");
 
 // The one shared browser. Paths are discovered, so a new Chrome download needs nothing here.
 function newestChrome() {
@@ -126,4 +134,7 @@ writeFileSync(envFile, env, { mode: 0o600 });
 chmodSync(envFile, 0o600);
 console.log(`Wrote ${envFile} (mode 600)`);
 console.log(`DATA_DIR=${dataDir}`);
-console.log("SANDBOX_PROVIDER=desktop, NODE_ENV=development, EMAIL_EMULATOR=true");
+const emailEmulator = env.match(/^EMAIL_EMULATOR=(.*)$/m)?.[1]?.trim() === "true";
+console.log(
+  `SANDBOX_PROVIDER=desktop, NODE_ENV=development, EMAIL_EMULATOR=${emailEmulator}`,
+);

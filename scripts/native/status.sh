@@ -15,9 +15,15 @@ if [ ! -f "$STATUS" ]; then
   exit 0
 fi
 
-# tunnel.sh writes values with no comma, so the first one ends a field.
+# tunnel.sh writes short values (state, url, since, pid) with no comma, so the first one ends a
+# field. `lastError` is a log line and cloudflared's messages do contain commas, so it is read as
+# everything after its key up to the closing brace instead of being cut at the first comma.
 read_field() {
   grep -o "\"$2\":[^,}]*" "$1" 2>/dev/null | head -1 | cut -d: -f2-
+}
+
+read_text_field() {
+  sed -n "s/^.*\"$2\":\\(.*\\)}$/\\1/p" "$1" 2>/dev/null | head -1
 }
 
 unquote() {
@@ -34,7 +40,7 @@ esac
 url="$(read_field "$STATUS" url)"
 since="$(read_field "$STATUS" since)"
 pid="$(read_field "$STATUS" pid)"
-err="$(read_field "$STATUS" lastError)"
+err="$(read_text_field "$STATUS" lastError)"
 [ -n "$url" ] || url="null"
 [ -n "$since" ] || since="null"
 [ -n "$pid" ] || pid="null"

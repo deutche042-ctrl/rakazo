@@ -234,11 +234,6 @@ export const ES_MESSAGES: Record<string, string> = {
     "Rakazo necesita Docker Desktop para ejecutarse en esta computadora.",
   "Rakazo needs Docker to run on this computer.":
     "Rakazo necesita Docker para ejecutarse en esta computadora.",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop es una app gratuita que ejecuta Rakazo en segundo plano. Instálala y ábrela una vez.",
-  "Install Docker Engine and start it.": "Instala Docker Engine e inícialo.",
-  "Download Docker Desktop": "Descargar Docker Desktop",
-  "Install Docker": "Instalar Docker",
   "Docker is installed but not running. Open it to continue.":
     "Docker está instalado pero no se está ejecutando. Ábrelo para continuar.",
   "Starting {app}…": "Iniciando {app}…",

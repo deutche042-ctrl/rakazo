@@ -294,17 +294,24 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
 
   if (!sent && !reset && !capabilityError) {
     return (
-      <div
-        role="status"
-        aria-busy="true"
-        data-rakazo-auth-loading=""
-        className="grid h-full place-items-center gap-3 bg-background"
-      >
-        <LogoAvatar size={48} motion={false} />
-        {/* Visible, so a slow server is never a blank page or a spinner with no explanation. */}
-        <p className="text-body text-muted-foreground">
-          <Trans>Loading sign-in…</Trans>
-        </p>
+      <div className="flex min-h-full flex-col bg-background text-foreground">
+        {/* The desktop window is frameless on Linux, so the loading state keeps its drag and
+            close controls instead of leaving the person with a screen they cannot move. */}
+        <div className="app-drag flex items-center gap-2 px-5 py-[18px]">
+          <WindowChrome />
+        </div>
+        <div
+          role="status"
+          aria-busy="true"
+          data-rakazo-auth-loading=""
+          className="grid flex-1 place-items-center gap-3 bg-background"
+        >
+          <LogoAvatar size={48} motion={false} />
+          {/* Visible, so a slow server is never a blank page or a spinner with no explanation. */}
+          <p className="text-body text-muted-foreground">
+            <Trans>Loading sign-in…</Trans>
+          </p>
+        </div>
       </div>
     );
   }

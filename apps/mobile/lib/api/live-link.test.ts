@@ -88,6 +88,17 @@ describe("readLiveLink", () => {
     await expect(readLiveLink({ base: "https://phone.example.com" })).resolves.toBeNull();
   });
 
+  it("hides the panel for `off`, which is a server that never ran the native stack", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({ state: "off", url: null, uptimeSeconds: null, lastError: null }),
+      ),
+    );
+
+    await expect(readLiveLink({ base: "https://phone.example.com" })).resolves.toBeNull();
+  });
+
   it("hides the panel for a reply that is not JSON, not a state, or too large", async () => {
     const fetchMock = vi
       .fn()

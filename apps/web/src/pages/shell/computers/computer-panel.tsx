@@ -18,7 +18,28 @@ import { ComputersUnavailableHint } from "../../../components/computers/Computer
 import { runsOnUserMachine } from "../../../lib/computers/computer-sandbox";
 import { screenFrames, screenIframeSandbox } from "../../../lib/computers/computer-screen";
 import { useSpaceQueries } from "../../../lib/query/query";
+import { BrowserTabsPanel } from "./browser-tabs-panel";
 import { DesktopKindEmptyState } from "./computer-view";
+import type { LiveButton, LiveInputKind, TouchGesture } from "./live-input";
+import {
+  isEditableTarget,
+  LIVE_KEYS,
+  LIVE_MODIFIER_KEYS,
+  LIVE_MOVE_MS,
+  LIVE_MULTI_CLICK_MS,
+  LIVE_MULTI_CLICK_SLOP_PX,
+  LIVE_MULTI_CLICK_TOUCH_SLOP_PX,
+  LIVE_PREVIEW_AFTER_INPUT_FOR_MS,
+  LIVE_PREVIEW_AFTER_INPUT_MS,
+  LIVE_PREVIEW_MS,
+  LIVE_SCROLL_MAX_AMOUNT,
+  LIVE_SCROLL_PX_PER_NOTCH,
+  LIVE_TOUCH_LONG_PRESS_MS,
+  LIVE_TOUCH_SCROLL_PX_PER_NOTCH,
+  LIVE_TOUCH_SLOP_PX,
+  liveButtons,
+  liveModifiers,
+} from "./live-input";
 
 type ComputerPanelProps = {
   bot: Bot;
@@ -87,82 +108,6 @@ export function ComputerPanel({
       )}
     </>
   );
-}
-
-/** The preview refreshes a frame a second, and faster for a moment after someone touches the page. */
-const LIVE_PREVIEW_MS = 1_000;
-const LIVE_PREVIEW_AFTER_INPUT_MS = 350;
-const LIVE_PREVIEW_AFTER_INPUT_FOR_MS = 2_000;
-/** A pointer stream is faster than the page redraws, so moves leave at this pace instead. */
-const LIVE_MOVE_MS = 50;
-/** Two presses inside this window at nearly the same spot make a double, then a triple click. */
-const LIVE_MULTI_CLICK_MS = 400;
-const LIVE_MULTI_CLICK_SLOP_PX = 4;
-/** A hundred pixels of wheel is one notch; a long flick is worth several. */
-const LIVE_SCROLL_PX_PER_NOTCH = 100;
-const LIVE_SCROLL_MAX_AMOUNT = 20;
-/** A finger has to travel this far before it means a scroll rather than a tap. */
-const LIVE_TOUCH_SLOP_PX = 8;
-/** Holding a finger still this long starts a drag, so a press can select text on the page. */
-const LIVE_TOUCH_LONG_PRESS_MS = 450;
-/** A phone's screen is small, so its finger travel maps to shorter notches than a wheel's. */
-const LIVE_TOUCH_SCROLL_PX_PER_NOTCH = 30;
-
-type LiveInputKind = "pointer" | "key" | "scroll" | "clipboard";
-type LiveButton = "left" | "right";
-
-/** One finger on the surface, from the press until it lifts or is cancelled. */
-type TouchGesture = {
-  id: number;
-  /** The first and last page points, in the page's own pixels. */
-  startX: number;
-  startY: number;
-  lastX: number;
-  lastY: number;
-  /** The same start in CSS pixels, where the slop threshold is measured. */
-  startClientX: number;
-  startClientY: number;
-  mode: "pending" | "scroll" | "drag";
-};
-
-/** Keys a page takes as a press; a printable character is sent as itself. */
-const LIVE_KEYS = new Set(
-  "Enter|Tab|Backspace|Delete|Escape| |ArrowLeft|ArrowRight|ArrowUp|ArrowDown|PageDown|PageUp|Home|End".split(
-    "|",
-  ),
-);
-
-/** A modifier on its own presses nothing; it travels with the key it is held for. */
-const LIVE_MODIFIER_KEYS = new Set(
-  "Alt AltGraph CapsLock Control Fn FnLock Hyper Meta NumLock ScrollLock Shift Super Symbol SymbolLock".split(
-    " ",
-  ),
-);
-
-function liveModifiers(event: {
-  altKey: boolean;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  shiftKey: boolean;
-}): string[] {
-  const modifiers: string[] = [];
-  if (event.altKey) modifiers.push("alt");
-  if (event.ctrlKey) modifiers.push("control");
-  if (event.metaKey) modifiers.push("meta");
-  if (event.shiftKey) modifiers.push("shift");
-  return modifiers;
-}
-
-/** A text field inside the surface keeps its own keys; the page gets everything else. */
-function isEditableTarget(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLElement &&
-    Boolean(target.closest("input, textarea, select, [contenteditable='true']"))
-  );
-}
-
-function liveButtons(button: LiveButton): number {
-  return button === "left" ? 1 : 2;
 }
 
 /** The shared browser's page, one frame a second, rendered where the computer screen used to be. */
@@ -251,6 +196,7 @@ function LiveSurface({
   const moveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clickRef = useRef<{
     at: number;
+    /** The press in CSS pixels, where the slop is measured. */
     x: number;
     y: number;
     button: LiveButton;
@@ -343,17 +289,22 @@ function LiveSurface({
     if (!moveTimerRef.current) flushMove();
   }
 
-  function countClick(point: { x: number; y: number }, button: LiveButton, at: number) {
+  function countClick(
+    client: { x: number; y: number },
+    button: LiveButton,
+    at: number,
+    slopPx: number,
+  ) {
     const previous = clickRef.current;
     const count =
       previous &&
       previous.button === button &&
       at - previous.at <= LIVE_MULTI_CLICK_MS &&
-      Math.abs(previous.x - point.x) <= LIVE_MULTI_CLICK_SLOP_PX &&
-      Math.abs(previous.y - point.y) <= LIVE_MULTI_CLICK_SLOP_PX
+      Math.abs(previous.x - client.x) <= slopPx &&
+      Math.abs(previous.y - client.y) <= slopPx
         ? Math.min(previous.count + 1, 3)
         : 1;
-    clickRef.current = { at, x: point.x, y: point.y, button, count };
+    clickRef.current = { at, x: client.x, y: client.y, button, count };
     return count;
   }
 
@@ -374,8 +325,8 @@ function LiveSurface({
     setPendingTouch(null);
     clickRef.current = {
       at: performance.now(),
-      x: touch.startX,
-      y: touch.startY,
+      x: touch.startClientX,
+      y: touch.startClientY,
       button: "left",
       count: 1,
     };
@@ -451,7 +402,12 @@ function LiveSurface({
       type: "down",
       button,
       buttons: liveButtons(button),
-      clickCount: countClick(point, button, event.timeStamp),
+      clickCount: countClick(
+        { x: event.clientX, y: event.clientY },
+        button,
+        event.timeStamp,
+        LIVE_MULTI_CLICK_SLOP_PX,
+      ),
     });
   }
 
@@ -536,23 +492,22 @@ function LiveSurface({
         setPendingTouch(null);
         if (touch.mode === "pending") {
           // Nothing moved: a tap is a press and release at the same point, with its click count.
+          // It goes as one `click` input so the press and release cannot arrive out of order and
+          // leave the page's button held down; the adapter sends both in one CDP batch.
           const point = pagePoint(event.clientX, event.clientY);
           if (point) {
-            const clickCount = countClick(point, "left", event.timeStamp);
+            const clickCount = countClick(
+              { x: event.clientX, y: event.clientY },
+              "left",
+              event.timeStamp,
+              LIVE_MULTI_CLICK_TOUCH_SLOP_PX,
+            );
             send("pointer", {
               x: point.x,
               y: point.y,
-              type: "down",
+              type: "click",
               button: "left",
               buttons: 1,
-              clickCount,
-            });
-            send("pointer", {
-              x: point.x,
-              y: point.y,
-              type: "up",
-              button: "left",
-              buttons: 0,
               clickCount,
             });
           }
@@ -638,9 +593,12 @@ function LiveSurface({
 
   function onTextCompositionEnd(event: ReactCompositionEvent<HTMLInputElement>) {
     composingRef.current = false;
-    const text = event.data ?? event.currentTarget.value;
+    // An IME may end a composition with no data while the field still holds what it composed, so
+    // fall back to the field. Only a non-empty text clears it: an empty end loses nothing.
+    const text = event.data || event.currentTarget.value;
+    if (!text) return;
     event.currentTarget.value = "";
-    if (text) send("clipboard", { text });
+    send("clipboard", { text });
   }
 
   /** A tap asks for the keyboard again inside the touch event, where iOS still allows it. */
@@ -705,7 +663,7 @@ function LiveSurface({
       role="application"
       tabIndex={interactive ? 0 : -1}
       className={`relative h-full touch-none overflow-hidden overscroll-none bg-black outline-none select-none [-webkit-tap-highlight-color:transparent] [-webkit-touch-callout:none] [-webkit-user-drag:none] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${
-        interactive ? "cursor-default" : ""
+        interactive ? "cursor-default pointer-coarse:pb-11" : ""
       }`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -746,6 +704,8 @@ function LiveSurface({
         <Trans>Live</Trans>
       </span>
       {interactive ? (
+        // On a phone the strip sits in the padding the surface reserves for it
+        // (`pointer-coarse:pb-11`), so it never covers the bottom of the page.
         <div
           role="toolbar"
           className="pointer-events-auto absolute inset-x-0 bottom-0 hidden items-center gap-0.5 border-t border-white/10 bg-black/70 px-1 py-1 backdrop-blur pointer-coarse:flex [&>button]:h-8 [&>button]:flex-1 [&>button]:rounded [&>button]:bg-white/10 [&>button]:text-caption [&>button]:text-white [&>button]:active:bg-white/25"
@@ -758,48 +718,23 @@ function LiveSurface({
           onKeyUp={(event) => event.stopPropagation()}
         >
           {barKeys.map(({ key, label, name }) => (
-            <button key={key} type="button" aria-label={name} onClick={() => pressBarKey(key)}>
+            <button
+              key={key}
+              type="button"
+              aria-label={name}
+              // The press is the key. Waiting for `click` is not reliable once the strip cancels
+              // pointerdown on a phone, and a key does not need a release anyway.
+              onPointerUp={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                pressBarKey(key);
+              }}
+            >
               {label}
             </button>
           ))}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-/** The shared browser's open tabs, each labelled with the bot that opened it. */
-function BrowserTabsPanel({ tabs }: { tabs: NonNullable<ComputerStatus["browserTabs"]> }) {
-  return (
-    <div
-      data-testid="browser-tabs"
-      className="overflow-hidden rounded-xl border border-border/60 bg-muted/30"
-    >
-      <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-caption font-medium text-muted-foreground">
-        <Globe size={14} strokeWidth={1.9} aria-hidden />
-        <Trans>Shared browser</Trans>
-      </div>
-      <ul className="divide-y divide-border/50">
-        {tabs.map((tab) => {
-          let host = tab.url;
-          try {
-            host = new URL(tab.url).host || tab.url;
-          } catch {
-            // A tab whose URL cannot be parsed still gets its title.
-          }
-          return (
-            <li key={tab.id} className="flex items-center gap-2 px-3 py-2 text-body">
-              <span className="max-w-[38%] shrink-0 truncate rounded-full bg-background px-2 py-0.5 text-caption text-muted-foreground">
-                {tab.botName ?? <Trans>Unclaimed</Trans>}
-              </span>
-              <span className="min-w-0 flex-1 truncate">{tab.title || tab.url}</span>
-              <span className="max-w-[38%] shrink-0 truncate text-caption text-muted-foreground">
-                {host}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
     </div>
   );
 }

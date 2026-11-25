@@ -99,9 +99,12 @@ export async function readLiveLink(target: LiveLinkTarget): Promise<LiveLinkView
       cancelResponseBody(response);
       return null;
     }
-    return parseLiveLink(
-      await readBoundedJsonResponse<unknown>(response, LIVE_LINK_MAX_BYTES, signal),
-    );
+    const raw = await readBoundedJsonResponse<unknown>(response, LIVE_LINK_MAX_BYTES, signal);
+    // `off` is what the route answers when this server never ran the native stack, as any hosted
+    // deployment does. The phone cannot start a tunnel, so it shows nothing there instead of
+    // pointing at a command on a machine that is not its own.
+    const parsed = parseLiveLink(raw);
+    return parsed?.state === "off" ? null : parsed;
   } catch {
     return null;
   } finally {

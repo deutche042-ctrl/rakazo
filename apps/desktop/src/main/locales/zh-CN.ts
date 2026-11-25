@@ -199,11 +199,6 @@ export const ZH_CN_MESSAGES: Record<string, string> = {
   "Rakazo needs Docker Desktop to run on this computer.":
     "Rakazo 需要 Docker Desktop 才能在这台电脑上运行。",
   "Rakazo needs Docker to run on this computer.": "Rakazo 需要 Docker 才能在这台电脑上运行。",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop 是一款免费应用，可在后台运行 Rakazo。安装并打开一次即可。",
-  "Install Docker Engine and start it.": "安装并启动 Docker Engine。",
-  "Download Docker Desktop": "下载 Docker Desktop",
-  "Install Docker": "安装 Docker",
   "Docker is installed but not running. Open it to continue.":
     "Docker 已安装但未运行。打开它即可继续。",
   "Starting {app}…": "正在启动 {app}…",

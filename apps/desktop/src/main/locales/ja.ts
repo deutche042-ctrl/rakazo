@@ -221,11 +221,6 @@ export const JA_MESSAGES: Record<string, string> = {
     "このコンピュータでRakazoを動かすにはDocker Desktopが必要です。",
   "Rakazo needs Docker to run on this computer.":
     "このコンピュータでRakazoを動かすにはDockerが必要です。",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktopは、Rakazoをバックグラウンドで動かす無料のアプリです。インストールして一度開いてください。",
-  "Install Docker Engine and start it.": "Docker Engineをインストールして起動してください。",
-  "Download Docker Desktop": "Docker Desktopをダウンロード",
-  "Install Docker": "Dockerをインストール",
   "Docker is installed but not running. Open it to continue.":
     "Dockerはインストールされていますが、実行されていません。開くと続行します。",
   "Starting {app}…": "{app}を起動しています…",

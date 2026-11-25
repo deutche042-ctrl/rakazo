@@ -16,7 +16,13 @@ vi.mock("@lingui/react/macro", () => {
 });
 
 vi.mock("@rakazo/ui-web", () => ({
-  Button: ({ variant: _variant, size: _size, ...props }: ComponentProps<"button">) => (
+  // The real Button turns variant/size into classes; the double drops them so the rest reaches
+  // the DOM. They belong to the double's own props, not to a plain <button>'s.
+  Button: ({
+    variant: _variant,
+    size: _size,
+    ...props
+  }: ComponentProps<"button"> & { variant?: string; size?: string }) => (
     <button type="button" {...props} />
   ),
 }));

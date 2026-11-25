@@ -73,13 +73,13 @@
 
 ## ٣. سكربتات بلا أي مستهلك آلي — أدوات يدوية (لا تُحذف بلا تأكيد المالك)
 
-هذه ليست «ميتة» بالمعنى القاطع: كل واحد منها يحمل في ترويسته أمر الاستخدام اليدوي، لكن **لا كود ولا CI ولا وثيقة** تستدعيه. أُدرجها لتقرير المالك، لا للحذف.
+هذه ليست «ميتة» بالمعنى القاطع: كل واحد منها يحمل في ترويسته أمر الاستخدام اليدوي، ومعظمها **لا كود ولا CI ولا وثيقة** تستدعيه (الاستثناء المذكور أدناه: `browser-login.sh` تستدعيه الوثائق وتعليمات البوت). أُدرجها لتقرير المالك، لا للحذف.
 
 | السكربت | عدد المراجع الخارجية | الدليل |
 | --- | --- | --- |
 | `scripts/native/health.sh` | ٠ | `grep -rIn 'health\.sh'` → صفر نتائج؛ يطبع صحة API/web/Postgres/المتصفح |
 | `scripts/native/list-tabs.mts` | ٠ | `grep -rIn 'list-tabs'` → صفر؛ يشير إليه `verify-browser.mts` في تعليق فقط |
-| `scripts/native/browser-login.sh` | ٠ خارجيًا | ظهوره الوحيد خارج نفسه: لا شيء؛ داخليًا `:8` تعليق استخدام |
+| `scripts/native/browser-login.sh` | مراجع توثيق وتعليمات | `docs/computer.md:40,67` و`docs/native-browser.md:218-252` وتعليمات البوت في `packages/adapters/src/runs/assembly/run-instructions.prompt.ts` تستدعيه؛ ليس كودًا ميتًا |
 | `scripts/native/verify-browser.mts` | ٠ خارجيًا | `:3`–`:4` تعليق استخدام فقط |
 | `scripts/native/verify-composio.mts` | ٠ خارجيًا | `:3` تعليق استخدام فقط |
 | `scripts/native/verify-desktop.mts` | ٠ خارجيًا | `:7` تعليق استخدام فقط |
@@ -92,7 +92,7 @@
 - `scripts/native/browser.sh` / `browser-stop.sh` — من `start.sh:25` و`stop.sh:10-11` و`native-browser.ts:823`.
 - `scripts/native/install-service.sh` / `supervise.sh` — من `scripts/appimage/AppRun:83` و`install-service.sh:23`.
 - `scripts/native/setup-env.mjs` — من `AppRun:82` و`install-browser.sh:21` و`verify-browser.mts:16`.
-- `scripts/native/setup-tailnet.sh` — ملف **غير متتبَّع** (`git status --short` → `?? scripts/native/setup-tailnet.sh`)، أضافته موجة أخرى؛ خارج نطاق هذا الجرد.
+- `scripts/native/setup-tailnet.sh` — متتبَّع ومعدَّل في هذه الموجة (`git status --short` → `M`)، ويُستدعى يدويًا كما في ترويسته؛ خارج نطاق هذا الجرد.
 
 ---
 

@@ -204,11 +204,6 @@ export const TH_MESSAGES: Record<string, string> = {
   "Rakazo needs Docker Desktop to run on this computer.":
     "Rakazo ต้องมี Docker Desktop จึงจะทำงานบนคอมพิวเตอร์เครื่องนี้ได้",
   "Rakazo needs Docker to run on this computer.": "Rakazo ต้องมี Docker จึงจะทำงานบนคอมพิวเตอร์เครื่องนี้ได้",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop เป็นแอปฟรีที่รัน Rakazo อยู่เบื้องหลัง ให้ติดตั้งแล้วเปิดสักครั้ง",
-  "Install Docker Engine and start it.": "ติดตั้ง Docker Engine แล้วเริ่มทำงาน",
-  "Download Docker Desktop": "ดาวน์โหลด Docker Desktop",
-  "Install Docker": "ติดตั้ง Docker",
   "Docker is installed but not running. Open it to continue.":
     "ติดตั้ง Docker แล้วแต่ยังไม่ทำงาน ให้เปิด Docker เพื่อดำเนินการต่อ",
   "Starting {app}…": "กำลังเริ่ม {app}…",

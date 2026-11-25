@@ -774,22 +774,26 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   mountAuthCapabilities(app, { env, auth, email, billing });
   mountAppAssociation(app, env);
   if (localEmailEmulator && env.nodeEnv === "development") {
-    app.get(
-      "/api/dev/emails",
-      (c) => {
-        // The emulator holds real mail. The live link publishes this server, so only the machine
-        // itself keeps the read: a proxied caller resolves to its own address, never loopback.
-        const ip = requestClientIp(c);
-        if (!ip || !isLocalhostOrLoopbackIp(ip)) return c.notFound();
-        return new Response(JSON.stringify(localEmailEmulator.sent), {
-          headers: { "cache-control": "no-store", "content-type": "application/json" },
-        });
-      },
-    );
+    app.get("/api/dev/emails", (c) => {
+      // The emulator holds real mail. The live link publishes this server, so only the machine
+      // itself keeps the read: a proxied caller resolves to its own address, never loopback.
+      const ip = requestClientIp(c);
+      if (!ip || !isLocalhostOrLoopbackIp(ip)) return c.notFound();
+      return new Response(JSON.stringify(localEmailEmulator.sent), {
+        headers: { "cache-control": "no-store", "content-type": "application/json" },
+      });
+    });
   }
   // The native live link (scripts/native/tunnel.sh): status, uptime, the last log lines and one
-  // way to stop it. Both routes need a session; the log is never readable without one.
-  mountNativeRuntime(app, { session: readSession, env: process.env });
+  // way to stop it. Only a native checkout has one: the state file and the pid it names belong to
+  // this machine, so a hosted deployment must not answer these routes at all. Otherwise any
+  // signed-in member could read the tunnel log and stop a local process. Both routes also need a
+  // session, so the log is never readable without one.
+  const nativeRuntime =
+    env.nodeEnv === "development" || Boolean(process.env.RAKAZO_NATIVE_STATE_DIR?.trim());
+  if (nativeRuntime) {
+    mountNativeRuntime(app, { session: readSession, env: process.env });
+  }
   app.route(
     "/",
     monitoringRoutes(

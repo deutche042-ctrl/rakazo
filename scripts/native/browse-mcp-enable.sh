@@ -189,6 +189,12 @@ if [ "$CHECK" -eq 1 ]; then
   done
   if [ "$CONNECTED" != "1" ]; then
     echo "[browse] the MCP server lists its tools, but no browser is connected to the relay" >&2
+    RELAY_LINE="$("$BROWSE" status 2>/dev/null | sed -n 's/^Relay: *//p' | head -1 || true)"
+    if [ -z "$RELAY_LINE" ] || printf '%s' "$RELAY_LINE" | grep -qiE 'not running|unavailable|error|failed|stopped'; then
+      echo "[browse] the relay itself is not running; start it with: $BROWSE relay restart" >&2
+    else
+      echo "[browse] the relay is up ($RELAY_LINE); the browser is the missing half" >&2
+    fi
     echo "[browse] a bot's status tool reports connected:false and execute waits, not fails; a" >&2
     echo "[browse] settings Test connection can still record the server as working" >&2
     echo "[browse] start and pair the shared browser: bash scripts/native/browse-setup.sh" >&2
@@ -205,7 +211,11 @@ cat <<EOF
            Ctrl+C in the terminal running setup, then scripts/native/start.sh
            (not scripts/native/stop.sh: it stops Postgres too)
 [browse] then, as an admin in Settings -> Plugins -> + -> Manage MCP servers -> Add server:
-           STDIO tab, name "browse", command "$BROWSE", arguments "mcp", Access "All bots"
+           STDIO tab, name "browse" (exactly, lowercase), command "$BROWSE",
+           arguments "mcp", Access "All bots"
+[browse] the name is load-bearing: a bot is told to call mcp__browse__execute, and a row named
+           anything else (or one whose slug becomes browse-2) is filtered as browse but briefed
+           with the generic browser_navigate/browser_snapshot/browser_act tools instead.
 [browse] --check proves the server lists every tool a bot may call and that a browser is connected
 [browse] verify with: $BROWSE status   and   bash scripts/native/browse-mcp-enable.sh --check
 [browse] from a bot that has the server: ask for the state of browse; its status tool must say connected:true

@@ -3,7 +3,7 @@
 // Drives the same state and events as the Docker controller, so the setup screen is unchanged.
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { DesktopLocalStackState } from "@rakazo/contracts";
@@ -40,6 +40,13 @@ const INHERITED_ENV = [
   "TMPDIR",
   "LANG",
   "LC_ALL",
+  // A desktop launch has a display, and the shared browser needs it to stay headful: Google
+  // refuses sign-in from HeadlessChrome, so start.sh must not fall back to headless.
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "XDG_RUNTIME_DIR",
+  "XAUTHORITY",
+  "DBUS_SESSION_BUS_ADDRESS",
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",
@@ -114,7 +121,7 @@ export function createHostStack(
   options: Omit<
     HostStackDeps,
     "stackDir" | "probe" | "randomHex" | "onState" | "localWebUrl" | "imageTag" | "projectRoot"
-  > & { localWebUrl?: string; projectRoot?: string | null; packaged?: boolean; appPath?: string },
+  > & { projectRoot?: string | null; packaged?: boolean; appPath?: string },
 ): HostStackController {
   const projectRoot =
     options.projectRoot !== undefined
@@ -133,10 +140,9 @@ export function createHostStack(
     onState: shared.onState,
     ...options,
     projectRoot,
-    localWebUrl:
-      options.localWebUrl?.trim() ||
-      options.env.RAKAZO_LOCAL_WEB_URL?.trim() ||
-      HOST_LOCAL_WEB_URL,
+    // Pinned: the sign-in origin, the probes and `start.sh`'s ports must agree. Honouring any
+    // other URL here would probe one port while the services bind another.
+    localWebUrl: HOST_LOCAL_WEB_URL,
     imageTag: HOST_IMAGE_TAG,
   });
 }
@@ -156,6 +162,10 @@ const servicesFailed = () =>
   t("Rakazo services did not start. Check the output below, then retry.");
 const portInUseDetail = "Port 5173 is already in use by another program. Quit it, then retry.";
 const missingCheckoutDetail = "Run bash scripts/native/start.sh in the Rakazo checkout, then retry.";
+const missingEnvDetail =
+  "This checkout has no .env. Run node scripts/native/setup-env.mjs in it, then retry.";
+const missingDatabaseUrlDetail =
+  "The checkout's .env has no DATABASE_URL. Run node scripts/native/setup-env.mjs in it, then retry.";
 
 /**
  * Runs, or adopts, the checkout's stack on this host. A stack this app started stops with the
@@ -242,11 +252,11 @@ export class HostStackController extends StackLifecycle {
     this.currentStackToken = await ensureStackToken(this.deps.stackDir, this.deps.randomHex);
 
     const projectRoot = this.deps.projectRoot;
-    const startScript =
-      projectRoot === null ? null : path.join(projectRoot, "scripts", "native", "start.sh");
+    if (projectRoot === null) throw new StartFailure(couldNotStart(), [missingCheckoutDetail]);
+    const startScript = path.join(projectRoot, "scripts", "native", "start.sh");
     const exists = this.deps.exists ?? existsSync;
-    if (startScript === null || !exists(startScript))
-      throw new StartFailure(couldNotStart(), [missingCheckoutDetail]);
+    if (!exists(startScript)) throw new StartFailure(couldNotStart(), [missingCheckoutDetail]);
+    this.assertCheckoutEnv(projectRoot);
 
     if (!(await (this.deps.portFree ?? portFreeOnLoopback)(HOST_WEB_PORT))) {
       if (await this.waitForAdoption(signal)) return;
@@ -264,6 +274,7 @@ export class HostStackController extends StackLifecycle {
     this.forward(child.stdout, child.stderr);
     child.once("exit", (code, exitSignal) => {
       this.childExit = { code, signal: exitSignal };
+      this.reportUnexpectedExit(child);
     });
     child.once("error", (error) => {
       this.childExit = { code: null, signal: null };
@@ -323,6 +334,35 @@ export class HostStackController extends StackLifecycle {
     throw new StartFailure(servicesFailed(), this.tail);
   }
 
+  /**
+   * `start.sh` runs `pnpm dev`, which starts a Docker Postgres when DATABASE_URL is missing (or
+   * tells the person to install Docker). A stack advertised as needing no Docker must not do
+   * either, so a checkout without its `.env` is refused before anything is spawned.
+   */
+  private assertCheckoutEnv(projectRoot: string) {
+    const envFile = path.join(projectRoot, ".env");
+    if (!existsSync(envFile)) throw new StartFailure(couldNotStart(), [missingEnvDetail]);
+    const databaseUrl =
+      /^\s*DATABASE_URL\s*=\s*(.*)$/m.exec(readFileSync(envFile, "utf8"))?.[1]?.trim() ?? "";
+    if (databaseUrl === "" || /^replace-with/i.test(databaseUrl))
+      throw new StartFailure(couldNotStart(), [missingDatabaseUrlDetail]);
+  }
+
+  /**
+   * A stack that falls over after it was ready would otherwise leave the setup screen saying
+   * "ready" with no stop control and no reason; report it so the person can retry.
+   */
+  private reportUnexpectedExit(child: ChildProcess) {
+    // A stop nulls `child` before signalling, and a start already reports its own failure.
+    if (this.child !== child || this.current.phase !== "ready") return;
+    this.setState({
+      ...initialStackState(this.deps.imageTag),
+      phase: "failed",
+      message: servicesFailed(),
+      output: [...this.tail],
+    });
+  }
+
   private forward(...streams: (NodeJS.ReadableStream | null)[]) {
     for (const stream of streams) {
       if (stream === null) continue;
@@ -354,6 +394,9 @@ export class HostStackController extends StackLifecycle {
       WEB_PORT: String(HOST_WEB_PORT),
       API_PORT: String(HOST_API_PORT),
       RAKAZO_HOST: "localhost",
+      // The app opens `localhost`, while a tailnet run replaces the sign-in origin with the
+      // tailnet URL; better-auth would then reject the app's origin. This stack is local-only.
+      RAKAZO_DEV_TAILNET: "0",
       BETTER_AUTH_URL: this.deps.localWebUrl,
       WEB_ORIGIN: this.deps.localWebUrl,
       API_URL: HOST_API_URL,
@@ -375,7 +418,15 @@ export class HostStackController extends StackLifecycle {
   private async stopChild() {
     const child = this.child;
     this.child = null;
-    if (child === null || child.exitCode !== null || child.signalCode !== null) return;
+    // A child that already exited, or failed to spawn and emitted `error` rather than `exit`,
+    // will never emit another event; waiting below would hang the failure path for minutes.
+    if (
+      child === null ||
+      this.childExit !== null ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    )
+      return;
     const pid = child.pid;
     const signal = (name: NodeJS.Signals) => {
       try {

@@ -9,7 +9,8 @@ The iOS and Android app can also point at a self-hosted origin at runtime. On th
 
 The app accepts plain `http://` only for a private IP, `localhost`, or a `.local` name, but Docker Compose publishes the web port on loopback by default. For LAN access, follow [Connecting a phone on the same network](#connecting-a-phone-on-the-same-network). A hostname reached over a VPN such as WireGuard or Tailscale needs HTTPS with a certificate the phone trusts: see [Connecting a phone over Tailscale](#connecting-a-phone-over-tailscale), or use a real domain with a Let's Encrypt certificate issued through a DNS challenge.
 
-The desktop app's **This computer** server can't be reached from a phone. See
+The desktop app's **This computer** server is loopback-only, except on Linux where it is the
+checkout stack that the live link above can publish. See
 [Desktop "This computer" servers](#desktop-this-computer-servers).
 
 If a domain login gate redirects the server probe to a browser sign-in page, use the
@@ -64,19 +65,34 @@ address for the same install, list it in
 
 The scripts in `scripts/native` run Rakazo on the machine itself, without Docker. To reach that
 stack from a phone outside the house, publish a temporary HTTPS link through a Cloudflare quick
-tunnel:
+tunnel.
 
-1. Start the stack, then in another terminal run `bash scripts/native/tunnel.sh`. The first run
-   needs `cloudflared`; if it is missing, the script prints the install command and exits.
-2. The script prints `https://<words>.trycloudflare.com`. The address changes on every start.
-3. On the phone, tap **Use a custom server** and enter that link with no port or path.
+Start it with the stack by putting `RAKAZO_DEV_TUNNEL=1` in `.env` (or the shell) and running
+`bash scripts/native/start.sh` or `pnpm dev`. `pnpm dev` starts the tunnel on the web port that
+this checkout actually chose, prints the link, and closes it when you quit. The first run needs
+`cloudflared`; if it is missing, the tunnel exits with the install command and the stack keeps
+running without a link. To start one by hand instead, start the stack and then run
+`bash scripts/native/tunnel.sh` in another terminal; it reads `WEB_PORT` from `.env`, else 5173.
+
+Either way the address is `https://<words>.trycloudflare.com`, it changes on every start, and
+the phone's **Use a custom server** takes it with no port or path.
+
+A quick tunnel arrives on a random host, so the dev server accepts `*.trycloudflare.com`
+`Host` headers, and a boot-started tunnel adds its URL to the API's trusted origins for that run,
+so a sign-in from another device's browser is not refused as a foreign origin. A hand-started
+tunnel is not in that list, so a browser sign-in there fails with `403 INVALID_ORIGIN` until the
+URL is added to `RAKAZO_EXTRA_AUTH_ORIGINS` and the API restarts; the mobile app is unaffected
+because it signs in with its own `rakazo://` origin and a bearer session.
 
 The tunnel keeps its state in `~/.local/share/rakazo-native` (`status.json`, `live-link.json`,
-`tunnel.log`, mode 600). On the web app, **Settings > Live link** shows it as a lamp: green
-**Running**, orange **Problem**, red **Stopped** or **Off**, with a copy button, one **Stop** and
-the last 100 log lines. On the phone, the **Server** screen shows the same lamp and link with
-**Copy link** and **Share link**; it polls only while that screen is visible, and it does not stop
-the tunnel or show the log, which can name addresses from the machine.
+`tunnel.log`, mode 600). In a development web build, **Settings > Live link** shows it as a lamp:
+green **Running**, orange **Problem**, red **Stopped** or **Off**, with a copy button, one
+**Stop** and the last 100 log lines. The lamp and the Stop button follow the Cloudflare tunnel
+only; a Tailscale share (`RAKAZO_DEV_TAILNET=1`) writes no state there. On the phone, the
+**Server** screen shows the same lamp and link with **Copy link** and **Share link**; it polls
+only while that screen is visible, and it does not stop the tunnel or show the log, which can
+name addresses from the machine. The group stays hidden when the server has no native tunnel at
+all, as on a hosted deployment, instead of offering a link nobody can start.
 
 Anyone with the link can open this server while the tunnel runs, so treat it as a secret. The
 development mailbox stays on the machine: `/api/dev/emails` answers loopback requests only, so
@@ -85,20 +101,31 @@ the mailbox. An account without a password must set one on the machine first.
 
 `bash scripts/native/stop.sh` stops the tunnel with the rest of the native stack. If the tunnel
 manager was killed and left `cloudflared` behind, it terminates the recorded process after
-checking its command line, so no public URL keeps pointing at the machine;
-`bash scripts/native/status.sh` prints the current state as JSON.
+checking its command line and writes `stopped` itself, so no public URL keeps pointing at the
+machine and the lamp does not turn into a problem; `bash scripts/native/status.sh` prints the
+current state as JSON.
 
 ## Desktop "This computer" servers
 
-The server the desktop app runs under **This computer** is for that computer only. It listens on
-loopback (`http://127.0.0.1:45173` by default, or another loopback port if that one is taken), and
-the app sets its origins to that address each time it starts. It also accepts a single account and
-relaxes some network settings because nothing else can reach it. Exposing it to other devices is
-not supported, so a phone can't connect to it over the LAN or Tailscale.
+What **This computer** runs depends on the platform.
 
-To use the mobile app, run Rakazo with the [published images](./self-host.md#published-images-no-checkout)
-on a server, or on the same computer, and connect the phone as described above. Point the desktop
-app at that server with **Existing instance**.
+On Linux, it runs or adopts the checkout's own `scripts/native/start.sh` at
+`http://localhost:5173` (see [Native checkout (scripts/native)](#native-checkout-scripts-native)).
+That is the same server this page describes above, so the live link, the phone and a browser on
+the machine all reach it at the address the checkout's `.env` sets. A Linux install that already
+has an app-managed Docker stack keeps that stack instead, until the person removes it, so its
+database is never abandoned.
+
+On macOS and Windows, and for that kept Docker stack, **This computer** is a loopback-only server
+(`http://127.0.0.1:45173` by default, or another loopback port if that one is taken). The app sets
+its origins to that address each time it starts. It accepts a single account and relaxes some
+network settings because nothing else can reach it. Exposing that Docker stack to other devices is
+not supported, so a phone cannot connect to it over the LAN or Tailscale.
+
+To use the mobile app with a Docker-path server, run Rakazo with the
+[published images](./self-host.md#published-images-no-checkout) on a server, or on the same
+computer, and connect the phone as described above. Point the desktop app at that server with
+**Existing instance**. With a Linux checkout stack, use the live link described above.
 
 ## Mobile push notifications
 

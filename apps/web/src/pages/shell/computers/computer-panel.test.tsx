@@ -581,16 +581,14 @@ it("treats a tap as a click with its click count and opens the keyboard", async 
     }),
   );
 
-  const [down, up] = sentInputs();
-  expect(down.payload).toMatchObject({
-    type: "down",
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
-    x: 640,
-    y: 379,
+  // One `click` input: the press and release travel as a single batch, so a slow link cannot
+  // deliver the release first and leave the page's button held down.
+  const [tap] = sentInputs();
+  expect(tap).toEqual({
+    botId: "bot-1",
+    kind: "pointer",
+    payload: { type: "click", button: "left", buttons: 1, clickCount: 1, x: 640, y: 379 },
   });
-  expect(up.payload).toMatchObject({ type: "up", buttons: 0, clickCount: 1 });
   expect(document.activeElement).toBe(surface.querySelector("input"));
 });
 
@@ -730,12 +728,9 @@ it("counts three taps in the same spot as a triple click", async () => {
   }
 
   expect(sentInputs().map((input) => [input.payload.type, input.payload.clickCount])).toEqual([
-    ["down", 1],
-    ["up", 1],
-    ["down", 2],
-    ["up", 2],
-    ["down", 3],
-    ["up", 3],
+    ["click", 1],
+    ["click", 2],
+    ["click", 3],
   ]);
 });
 
@@ -765,6 +760,60 @@ it("scrolls down the page when a finger drags up the picture", async () => {
   ]);
 });
 
+it("measures a tap's drift in CSS pixels, not in the page's own pixels", async () => {
+  await renderLive();
+  const surface = liveSurface();
+  const img = frameImage();
+
+  async function tap(clientX: number, clientY: number) {
+    await fire(
+      img,
+      pointer("pointerdown", {
+        pointerType: "touch",
+        clientX,
+        clientY,
+        button: 0,
+        buttons: 1,
+      }),
+    );
+    await fire(
+      surface,
+      pointer("pointerup", {
+        pointerType: "touch",
+        clientX,
+        clientY,
+        button: 0,
+        buttons: 0,
+      }),
+    );
+  }
+
+  // Ten CSS pixels of finger drift is twelve page pixels on this scaled-down picture. In page
+  // pixels that drift was past the old slop, so a phone could never land a double tap.
+  await tap(500, 300);
+  await tap(510, 300);
+  // Far enough away in CSS pixels to be a new click, however it maps to the page.
+  await tap(540, 300);
+
+  expect(sentInputs().map((input) => input.payload.clickCount)).toEqual([1, 2, 1]);
+});
+
+it("lets Escape close the computer window instead of eating it on the page", async () => {
+  await renderLive();
+  const surface = liveSurface();
+
+  const keydown = new KeyboardEvent("keydown", {
+    key: "Escape",
+    bubbles: true,
+    cancelable: true,
+  });
+  await fire(surface, keydown);
+
+  // Not prevented, so the window's own document listener still sees a close.
+  expect(keydown.defaultPrevented).toBe(false);
+  expect(frameMocks.mutate).not.toHaveBeenCalled();
+});
+
 it("sends the strip's page keys without clicking the page", async () => {
   await renderLive();
   const surface = liveSurface();
@@ -790,7 +839,17 @@ it("sends the strip's page keys without clicking the page", async () => {
   );
   expect(frameMocks.mutate).not.toHaveBeenCalled();
 
-  await act(async () => escapeKey.click());
+  // The key goes out on the press: a cancelled pointerdown must not eat the click on a phone.
+  await fire(
+    escapeKey,
+    pointer("pointerup", {
+      pointerType: "touch",
+      clientX: 50,
+      clientY: 570,
+      button: 0,
+      buttons: 0,
+    }),
+  );
   expect(frameMocks.mutate).toHaveBeenCalledOnce();
   expect(frameMocks.mutate).toHaveBeenCalledWith({
     botId: "bot-1",

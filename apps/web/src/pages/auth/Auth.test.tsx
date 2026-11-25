@@ -143,7 +143,11 @@ it.each(["in", "up", "forgot"] as const)(
 );
 it("stops waiting for the app after ten seconds and offers a retry", async () => {
   vi.useFakeTimers();
-  vi.mocked(fetchAuthCapabilities).mockResolvedValue({ ...capabilities, passwordAuth: true });
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    ...capabilities,
+    passwordAuth: true,
+    providers: [],
+  });
   vi.mocked(authClient.signIn.email).mockResolvedValue({ data: {}, error: null } as never);
   await render();
   await enter(host.querySelector('input[name="email"]'), "person@example.com");

@@ -10,6 +10,7 @@ import type {
   PageBrowserCommand,
   PageBrowserResult,
 } from "@rakazo/adapter-kit";
+import { bestEffort } from "@rakazo/logging";
 import WebSocket from "ws";
 import type { LiveBrowserTarget } from "../../../browse/browse-tab-conflict.js";
 import {
@@ -25,6 +26,8 @@ const COMMAND_TIMEOUT_MS = 25_000;
 /** Longer than one command, so a lock left by a crashed process frees itself. */
 const LOCK_STALE_MS = 60_000;
 const LOCK_WAIT_MS = 30_000;
+/** Moves ask which tab to drive every 50ms, so the target list is reused for a few of them. */
+const TARGETS_CACHE_MS = 200;
 
 export interface NativeBrowserOptions {
   /** Loopback CDP port of the one shared Chromium. */
@@ -219,10 +222,10 @@ function isInactivePage(error: unknown): boolean {
 
 /**
  * Google's final answer to a sign-in from an automated browser. The same page would answer again,
- * so no caller may retry; the session has to come from the connected Google app instead.
+ * so no caller may retry; the session has to come from a real window or the connected Google app.
  */
 export const GOOGLE_SIGNIN_BLOCKED_MESSAGE =
-  "Google blocked this sign-in because the page browser is automated. Do not retry. Connect the Google app in Integrations (OAuth) and use its tools instead.";
+  "Google blocked this sign-in because the page browser is automated. Do not retry. On a self-hosted Linux host run `bash scripts/native/browser-login.sh`; otherwise connect the Google app in Integrations (OAuth) and use its tools instead.";
 
 /** True when a page browser result is Google's refused-sign-in page. */
 export function isGoogleSignInRejected(result: PageBrowserResult): boolean {
@@ -230,7 +233,9 @@ export function isGoogleSignInRejected(result: PageBrowserResult): boolean {
   const tree = typeof result.tree === "string" ? result.tree : "";
   return (
     /accounts\.google\.com\/.*signin\/rejected/i.test(url) ||
-    /This browser or app may not be secure/i.test(tree)
+    // Google serves both English wordings; the page browser helper matches the same pair
+    // (infra/sandboxes/computer/rakazo-page-browser, GOOGLE_SIGNIN_TEXT).
+    /This browser(?: or app)? may not be secure/i.test(tree)
   );
 }
 
@@ -305,6 +310,7 @@ export class NativeBrowser {
   private readonly botTab = new Map<string, string>();
   /** The URL the last command ended on, which names its tab even when the URL did not change. */
   private lastResultUrl?: string;
+  private targetsCache?: { at: number; targets: LiveBrowserTarget[] };
 
   constructor(private readonly options: NativeBrowserOptions) {}
 
@@ -402,7 +408,7 @@ export class NativeBrowser {
       if (isInactivePage(error)) {
         // The panel's tab can be in the background (browse keeps its own tab in front). Bring it
         // to the front once, then capture; this is also how a person sees the page it is showing.
-        await this.sendCdp(url, "Page.bringToFront", {}).catch(() => undefined);
+        await bestEffort("bring the tab to the front", this.sendCdp(url, "Page.bringToFront", {}));
         result = await capture();
       } else {
         // Chrome briefly refuses while it is committing a frame; one retry settles it.
@@ -585,6 +591,8 @@ export class NativeBrowser {
 
   /** Every target the browser knows, with the attach flag that identifies browse's tab. */
   private async browserTargets(): Promise<LiveBrowserTarget[]> {
+    const cached = this.targetsCache;
+    if (cached && performance.now() - cached.at < TARGETS_CACHE_MS) return cached.targets;
     const browserUrl = await this.browserSocketUrl();
     if (!browserUrl) return [];
     try {
@@ -593,7 +601,9 @@ export class NativeBrowser {
         "Target.getTargets",
         {},
       );
-      return parseCdpTargets(result.targetInfos);
+      const targets = parseCdpTargets(result.targetInfos);
+      this.targetsCache = { at: performance.now(), targets };
+      return targets;
     } catch {
       return [];
     }
@@ -654,8 +664,9 @@ export class NativeBrowser {
       // Ownership is recorded first: a page that fails to load is still this bot's tab, and the
       // person can navigate it in the panel.
       if (mirrorUrl) {
-        await this.sendCdp(page.webSocketDebuggerUrl, "Page.navigate", { url: mirrorUrl }).catch(
-          () => undefined,
+        await bestEffort(
+          "navigate the panel's mirrored tab",
+          this.sendCdp(page.webSocketDebuggerUrl, "Page.navigate", { url: mirrorUrl }),
         );
       }
       return page.webSocketDebuggerUrl;

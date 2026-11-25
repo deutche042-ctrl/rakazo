@@ -111,9 +111,16 @@ bash scripts/native/start.sh
 ```
 
 `setup-env.mjs` writes `.env` with random secrets and the `http://localhost:5173` origin, keeping
-existing values when rerun. `start.sh` starts Postgres on 5433 and the API, worker and web on
-their fixed ports. Open [http://localhost:5173](http://localhost:5173); the passkey prompt needs
-that `localhost` address, not `127.0.0.1`.
+existing values (secrets, origins and ports) when rerun. `start.sh` starts Postgres on 5433 and
+the API, worker and web on their fixed ports. Open
+[http://localhost:5173](http://localhost:5173); the passkey prompt needs that `localhost` address,
+not `127.0.0.1`.
+
+The desktop app's **This computer** stack always runs on `localhost:5173` and turns
+`RAKAZO_DEV_TAILNET` off for that stack, because a tailnet origin would replace the sign-in origin
+the app opens and break passkeys there. Use `pnpm dev` for tailnet sharing. On Linux, a checkout
+that already has an app-managed Docker stack keeps running it, since nothing imports its database
+into the no-Docker stack; remove that stack when you are ready to start the native one.
 
 ## Quick start (published images)
 

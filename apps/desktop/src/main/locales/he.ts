@@ -212,11 +212,6 @@ export const HE_MESSAGES: Record<string, string> = {
   "Rakazo needs Docker Desktop to run on this computer.":
     "Rakazo צריך את Docker Desktop כדי לפעול במחשב הזה.",
   "Rakazo needs Docker to run on this computer.": "Rakazo צריך את Docker כדי לפעול במחשב הזה.",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop היא אפליקציה חינמית שמפעילה את Rakazo ברקע. מתקינים ופותחים אותה פעם אחת.",
-  "Install Docker Engine and start it.": "מתקינים את Docker Engine ומפעילים אותו.",
-  "Download Docker Desktop": "הורדת Docker Desktop",
-  "Install Docker": "התקנת Docker",
   "Docker is installed but not running. Open it to continue.":
     "Docker מותקן אבל לא פועל. פותחים אותו כדי להמשיך.",
   "Starting {app}…": "{app} מופעל…",

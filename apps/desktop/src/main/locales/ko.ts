@@ -215,11 +215,6 @@ export const KO_MESSAGES: Record<string, string> = {
     "이 컴퓨터에서 Rakazo를 실행하려면 Docker Desktop이 필요합니다.",
   "Rakazo needs Docker to run on this computer.":
     "이 컴퓨터에서 Rakazo를 실행하려면 Docker가 필요합니다.",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop은 Rakazo를 백그라운드에서 실행하는 무료 앱입니다. 설치하고 한 번 여세요.",
-  "Install Docker Engine and start it.": "Docker Engine을 설치하고 시작하세요.",
-  "Download Docker Desktop": "Docker Desktop 다운로드",
-  "Install Docker": "Docker 설치",
   "Docker is installed but not running. Open it to continue.":
     "Docker가 설치되어 있지만 실행 중이 아닙니다. 계속하려면 여세요.",
   "Starting {app}…": "{app} 시작 중…",

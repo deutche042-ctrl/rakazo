@@ -36,13 +36,28 @@ vi.mock("expo-router", () => ({
     },
   },
   useRouter: () => ({ back: vi.fn(), canGoBack: () => false, replace: vi.fn() }),
+  // The screen reads its live link only while focused; a no-op keeps that read off in tests,
+  // which do not render a navigator.
+  useFocusEffect: () => {},
 }));
+// The live link's Copy action loads the native clipboard module, which needs the Expo runtime.
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
+// The query client reads the session generation; mocking it keeps the native store out of tests.
+vi.mock("../api/session", () => ({ currentSessionGeneration: () => 1 }));
 vi.mock("react-native", () => {
   const View = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
   return {
     Alert: { alert: vi.fn() },
+    AppState: {
+      addEventListener: () => ({ remove: () => {} }),
+      currentState: "active",
+    },
     KeyboardAvoidingView: View,
-    Platform: { OS: "ios" },
+    Platform: {
+      OS: "ios",
+      // Icon fonts and other native modules read this at import time.
+      select: (values: Record<string, unknown>) => values.ios ?? values.default,
+    },
     ScrollView: View,
     StyleSheet: { create: <T,>(styles: T) => styles },
     Text: View,
@@ -116,6 +131,8 @@ vi.mock("../../components/native/native-action-button", () => ({
     </button>
   ),
 }));
+// The icon set loads Expo modules that need a native runtime; the screen only needs it to render.
+vi.mock("../../components/native/native-symbol", () => ({ NativeSymbol: () => null }));
 // Plain markers, so the header actions can be called straight from the captured options.
 vi.mock("../../components/native/sheet-header", () => ({
   cancelHeaderOptions: (label: string, onPress: () => void) => ({ headerLeft: { label, onPress } }),

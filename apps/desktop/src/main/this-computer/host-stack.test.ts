@@ -6,7 +6,12 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostStackDeps } from "./host-stack.js";
-import { HOST_LOCAL_WEB_URL, HostStackController, resolveHostProjectRoot } from "./host-stack.js";
+import {
+  createHostStack,
+  HOST_LOCAL_WEB_URL,
+  HostStackController,
+  resolveHostProjectRoot,
+} from "./host-stack.js";
 import { ensureStackToken } from "./local-stack.js";
 
 class FakeChild extends EventEmitter {
@@ -79,7 +84,12 @@ function harness(overrides: Partial<HostStackDeps> = {}, onSpawn?: (child: FakeC
     projectRoot,
     localWebUrl: HOST_LOCAL_WEB_URL,
     imageTag: "native",
-    env: { HOME: "/home/tester", PATH: "/usr/local/bin:/usr/bin:/bin" },
+    env: {
+      HOME: "/home/tester",
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      DISPLAY: ":0",
+      WAYLAND_DISPLAY: "wayland-0",
+    },
     probe,
     health,
     randomHex: () => "ab".repeat(32),
@@ -95,10 +105,14 @@ function harness(overrides: Partial<HostStackDeps> = {}, onSpawn?: (child: FakeC
   return { deps, projectRoot, stackDir, spawned, killed, probe, health };
 }
 
-/** The checkout `start.sh` a controller is expected to run. */
-async function withCheckout(projectRoot: string) {
+/** The checkout `start.sh` and `.env` a controller is expected to run. */
+async function withCheckout(
+  projectRoot: string,
+  env: string | null = "DATABASE_URL=postgres://rakazo_app:secret@127.0.0.1:5433/rakazo\n",
+) {
   await mkdir(path.join(projectRoot, "scripts", "native"), { recursive: true });
   await writeFile(path.join(projectRoot, "scripts", "native", "start.sh"), "#!/usr/bin/env bash\n");
+  if (env !== null) await writeFile(path.join(projectRoot, ".env"), env);
   return path.join(projectRoot, "scripts", "native", "start.sh");
 }
 
@@ -160,6 +174,10 @@ describe("HostStackController", () => {
       WEB_PORT: "5173",
       API_PORT: "3100",
       RAKAZO_HOST: "localhost",
+      RAKAZO_DEV_TAILNET: "0",
+      // The shared browser stays headful, so Google sign-in works inside the desktop app.
+      DISPLAY: ":0",
+      WAYLAND_DISPLAY: "wayland-0",
       BETTER_AUTH_URL: HOST_LOCAL_WEB_URL,
       WEB_ORIGIN: HOST_LOCAL_WEB_URL,
       API_URL: "http://localhost:3100",
@@ -219,6 +237,87 @@ describe("HostStackController", () => {
     expect(state.message).not.toMatch(/docker/i);
     expect(state.output?.join("\n")).not.toMatch(/docker/i);
     expect(ui.spawned).toHaveLength(0);
+  });
+
+  it("refuses a checkout with no .env before anything starts", async () => {
+    const ui = harness();
+    await withCheckout(ui.projectRoot, null);
+
+    const controller = new HostStackController(ui.deps);
+    const state = await controller.start();
+
+    expect(state.phase).toBe("failed");
+    expect(state.output?.join("\n")).toContain("setup-env.mjs");
+    expect(state.message).not.toMatch(/docker/i);
+    expect(ui.spawned).toHaveLength(0);
+  });
+
+  it("refuses a checkout whose .env has no DATABASE_URL, so dev never starts Docker", async () => {
+    const ui = harness();
+    await withCheckout(ui.projectRoot, "NODE_ENV=development\n");
+
+    const controller = new HostStackController(ui.deps);
+    const state = await controller.start();
+
+    expect(state.phase).toBe("failed");
+    expect(state.output?.join("\n")).toContain("DATABASE_URL");
+    expect(state.output?.join("\n")).not.toMatch(/docker/i);
+    expect(ui.spawned).toHaveLength(0);
+  });
+
+  it("reports a child that cannot be spawned instead of timing out", async () => {
+    const ui = harness({
+      spawn: (_command, args, options) => {
+        const child = new FakeChild(24_000, args, options);
+        queueMicrotask(() => child.emit("error", new Error("spawn /bin/bash ENOENT")));
+        return child as unknown as ChildProcess;
+      },
+    });
+    await withCheckout(ui.projectRoot);
+
+    const controller = new HostStackController(ui.deps);
+    const state = await controller.start();
+
+    expect(state.phase).toBe("failed");
+    expect(state.output).toContain("spawn /bin/bash ENOENT");
+  });
+
+  it("reports a managed stack that exits after it was ready", async () => {
+    const ui = harness();
+    await withCheckout(ui.projectRoot);
+    ui.probe.mockResolvedValue("native");
+    const states: string[] = [];
+    ui.deps.onState = (state) => states.push(state.phase);
+
+    const controller = new HostStackController(ui.deps);
+    await controller.start();
+    const child = ui.spawned[0]?.child as FakeChild;
+    child.exit(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(states.at(-1)).toBe("failed");
+    expect(controller.state().message).toBe(
+      "Rakazo services did not start. Check the output below, then retry.",
+    );
+    expect(controller.hasProcesses()).toBe(false);
+  });
+
+  it("ignores RAKAZO_LOCAL_WEB_URL, since the ports and sign-in origin are pinned", async () => {
+    const ui = harness();
+    const controller = createHostStack(
+      { stackDir: ui.stackDir, probe: ui.probe, randomHex: () => "ab".repeat(32) },
+      {
+        env: { RAKAZO_LOCAL_WEB_URL: "http://127.0.0.1:45173" },
+        projectRoot: ui.projectRoot,
+        health: ui.health,
+        spawn: ui.deps.spawn,
+        sleep: ui.deps.sleep,
+        portFree: ui.deps.portFree,
+        killGroup: ui.deps.killGroup,
+      },
+    );
+
+    expect(controller.webUrl()).toBe(HOST_LOCAL_WEB_URL);
   });
 
   it("stops the process group it started and returns to idle", async () => {

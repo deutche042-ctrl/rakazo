@@ -222,11 +222,6 @@ export const NL_MESSAGES: Record<string, string> = {
     "Rakazo heeft Docker Desktop nodig om op deze computer te draaien.",
   "Rakazo needs Docker to run on this computer.":
     "Rakazo heeft Docker nodig om op deze computer te draaien.",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop is een gratis app die Rakazo op de achtergrond draait. Installeer en open het één keer.",
-  "Install Docker Engine and start it.": "Installeer Docker Engine en start het.",
-  "Download Docker Desktop": "Docker Desktop downloaden",
-  "Install Docker": "Docker installeren",
   "Docker is installed but not running. Open it to continue.":
     "Docker is geïnstalleerd maar draait niet. Open het om door te gaan.",
   "Starting {app}…": "{app} wordt gestart…",

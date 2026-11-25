@@ -62,4 +62,11 @@ describe("hostComputerInstruction", () => {
       expect(instruction).not.toContain("browser-login.sh");
     }
   });
+
+  it("does not name a local script on a Linux host not marked as the native stack", () => {
+    // A Linux desktop app host has no scripts/native, so platform alone is not enough.
+    const instruction = hostComputerInstruction("local", host);
+    expect(instruction).toContain("OAuth");
+    expect(instruction).not.toContain("browser-login.sh");
+  });
 });

@@ -220,11 +220,6 @@ export const RU_MESSAGES: Record<string, string> = {
     "Чтобы Rakazo работал на этом компьютере, нужен Docker Desktop.",
   "Rakazo needs Docker to run on this computer.":
     "Чтобы Rakazo работал на этом компьютере, нужен Docker.",
-  "Docker Desktop is a free app that runs Rakazo in the background. Install it and open it once.":
-    "Docker Desktop — бесплатное приложение, которое запускает Rakazo в фоне. Установите и один раз откройте его.",
-  "Install Docker Engine and start it.": "Установите Docker Engine и запустите его.",
-  "Download Docker Desktop": "Скачать Docker Desktop",
-  "Install Docker": "Установить Docker",
   "Docker is installed but not running. Open it to continue.":
     "Docker установлен, но не запущен. Откройте его, чтобы продолжить.",
   "Starting {app}…": "Запуск {app}…",

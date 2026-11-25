@@ -47,9 +47,10 @@ export function hostComputerInstruction(
   options?: { sharedNativeBrowser?: boolean; browseMcp?: boolean },
 ): string {
   const shell = `Home: ${JSON.stringify(host.home)}. Shell: ${JSON.stringify(host.shell)}. The shell tool executes commands with that shell. Use its native syntax, paths and installed tools; do not assume Linux or bash.`;
-  // scripts/native exists on a self-hosted Linux host. A caller that knows the shared native browser
-  // is on can say so; otherwise the host platform is the best signal available here.
-  const localWindow = options?.sharedNativeBrowser ?? host.platform === "linux";
+  // scripts/native exists only on a self-hosted Linux host. The platform alone cannot tell that host
+  // from a Linux desktop app, where scripts/native is absent, so only a caller that knows it is the
+  // native stack may turn the local sign-in window on.
+  const localWindow = options?.sharedNativeBrowser === true;
   const googleInstruction =
     computerKind !== "wuying" && localWindow
       ? `${GOOGLE_SIGNIN_OAUTH_INSTRUCTION} ${GOOGLE_SIGNIN_LOCAL_INSTRUCTION}`

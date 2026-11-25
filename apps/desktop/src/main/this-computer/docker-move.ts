@@ -31,13 +31,19 @@ interface StackFacts {
 
 /**
  * Which stack runs This computer. Linux runs, or adopts, the checkout's own stack, with no Docker
- * or VM involved. A Mac that never used Docker, or no longer has it, goes native; one with a
- * Docker stack keeps it unless the person agreed to move ("ask" means they have not been asked yet).
+ * or VM involved — unless an earlier app version left a Docker stack behind. Nothing imports that
+ * stack on Linux, so switching would make its bots and chats disappear from view; it is kept until
+ * the person removes it. A Mac that never used Docker, or no longer has it, goes native; one with
+ * a Docker stack keeps it unless the person agreed to move ("ask" means they have not been asked).
  */
 export function chooseStack(
   input: StackFacts & { eligible: boolean; nativeStack: boolean; hostStack: boolean },
 ): StackChoice | "ask" {
-  if (input.hostStack) return "native";
+  if (input.hostStack) {
+    if (input.nativeStack || !input.dockerStack || !input.dockerInstalled) return "native";
+    // Linux has no path that copies a Docker stack's data, so an existing one is never abandoned.
+    return "docker";
+  }
   if (!input.eligible) return "docker";
   if (input.nativeStack || !input.dockerStack || !input.dockerInstalled) return "native";
   return input.choice ?? "ask";
